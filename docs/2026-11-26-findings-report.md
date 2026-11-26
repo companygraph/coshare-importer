@@ -41,7 +41,7 @@ The first two cost the most: together they are why a load needs two passes and a
 
 ## Smaller findings
 
-None of these blocked the load; each cost time to find out, or leaves noise a user cannot clear.
+None of these blocked the load; each cost time to find out, or leaves noise a user cannot clear. The last was found after the load, trying attribute groups, and is why the importer groups nothing.
 
 | What we saw | What we ask |
 | --- | --- |
@@ -52,6 +52,7 @@ None of these blocked the load; each cost time to find out, or leaves noise a us
 | Artifact paths take the schema's type UUID; the schema UUID answers 200 with an empty list | A 404 for an unknown type UUID |
 | There is no published API description; we read the endpoints from the foundation front end's code | An OpenAPI description of bundles, transitions and references |
 | GraphQL refuses a query that asks `__Type.fields` more than once as "not in good faith" | Name the limit in the error, so tools can split the query |
+| The artifact import drops a grouped attribute's value without a word, and a `PUT` of a reference nested under its group answers 200 and creates no link; a group's display name and order are dropped at import | Import grouped values and grouped references as the front end writes them, and keep a group's display name and order |
 
 ## What our side does so nothing is lost
 

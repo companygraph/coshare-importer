@@ -6,7 +6,7 @@ It reads the instance with the parser `companygraph/meta-model` publishes, at th
 
 ## What it does
 
-`bin/convert.mjs` reads an instance and writes the bundles CoShare's import takes, in the shape CoShare's own export produces: `schemas.bundle.json`, `artifacts.bundle.json`, `targets.json` for the references that name several types, and `report.md`, which counts what was mapped and lists what was not. It reads the instance only and sends nothing. A type becomes the schema `cg_<type>` in the category `companygraph-<unit>`, a frontmatter field an attribute with an enum's tokens as `ALLOWED_VALUES`, a section a text attribute and a reference a `REFERENCE`. The row a link came from goes on the link as `row`, beside the row's other cells, so a table can be rebuilt from CoShare in the order it was written. Each artifact also keeps the whole page in `markdown`, its id in `companygraph_id` and the commit in `companygraph_commit`, so nothing the mapping leaves out is lost.
+`bin/convert.mjs` reads an instance and writes the bundles CoShare's import takes, in the shape CoShare's own export produces: `schemas.bundle.json`, `artifacts.bundle.json`, `targets.json` for the references that name several types, and `report.md`, which counts what was mapped and lists what was not. It reads the instance only and sends nothing. A type becomes the schema `cg_<type>` in the category `companygraph-<unit>`, a frontmatter field an attribute with an enum's tokens as `ALLOWED_VALUES`, a section a text attribute and a reference a `REFERENCE`. The row a link came from goes on the link as `row`, beside the row's other cells, so a table can be rebuilt from CoShare in the order it was written. Each artifact also keeps the whole page in `markdown`, its id in `companygraph_id` and the commit in `companygraph_commit`, so nothing the mapping leaves out is lost. Every attribute carries CoShare's data classification: privacy from the schemas, personal on a profile and on what a profile owns, indirectly identifying on a reference that can name a profile and not personal elsewhere; confidentiality from `--confidentiality`, one level for the whole instance, since it says where the instance is kept and no schema knows that.
 
 `bin/load.mjs` loads those bundles into a tenant and leaves alone every type already there. It imports the schemas in two passes, publishes each and resolves their references, imports the artifacts, then sets every link and its properties and reads each link back. `bin/verify.mjs` reads the tenant and compares it with the bundles: each schema's state and version, every artifact and every link with every property, and it prints CoShare's integrity report. `bin/reset.mjs` removes everything whose type starts with `cg_`, the artifacts first, then the schemas, and touches nothing else.
 
@@ -18,13 +18,13 @@ Node 22 or later, and a CoShare token in `COSHARE_JWT`. `COSHARE_API` names the 
 
 ```sh
 npm ci
-node bin/convert.mjs ~/git/companygraph/mental-model
+node bin/convert.mjs ~/git/companygraph/mental-model --confidentiality 0
 node bin/load.mjs ~/git/companygraph/mental-model/dist/coshare --dry-run
 node bin/load.mjs ~/git/companygraph/mental-model/dist/coshare
 node bin/verify.mjs ~/git/companygraph/mental-model/dist/coshare
 ```
 
-`convert` writes into `dist/coshare/` inside the instance unless `--out` names another folder, and `--only` takes a comma-separated list of types for a trial. `load` and `reset` take `--dry-run`, which reads the tenant and writes nothing. A later commit of the instance reaches CoShare as a clean reload: `reset`, then `load`.
+`convert` writes into `dist/coshare/` inside the instance unless `--out` names another folder, `--only` takes a comma-separated list of types for a trial, and `--confidentiality` takes 0 for public, 1 internal, 2 confidential or 3 strictly confidential; without it, CoShare shows confidentiality as not decided. `load` and `reset` take `--dry-run`, which reads the tenant and writes nothing. A later commit of the instance reaches CoShare as a clean reload: `reset`, then `load`.
 
 ## Tests
 
