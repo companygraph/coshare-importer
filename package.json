@@ -12,7 +12,7 @@
     "load": "node bin/load.mjs",
     "verify": "node bin/verify.mjs",
     "reset": "node bin/reset.mjs",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@companygraph/meta-model": "0.99.0"
