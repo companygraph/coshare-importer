@@ -22,6 +22,8 @@ before(() => {
   page("decision-kinds/vocabulary.md", `---\nid: ${id(3)}\nsource: Local\n---\n\n# Vocabulary\n\n> A call about the words.\n\n## What it means\n\nThe words a model uses.\n`);
   page("decision-statuses/standing.md", `---\nid: ${id(4)}\nsource: Local\n---\n\n# Standing\n\n> The call holds.\n\n## What it means\n\nIt holds.\n`);
   page("decisions/2026-one-voice.md", `---\nid: ${id(5)}\nsource: Local\ndecided: 2026-11-01\nkind: Vocabulary\nstatus: Standing\nby: Owner\n---\n\n# The company writes in one voice\n\n> We write every page in one voice.\n\n## The question\n\nWhich voice.\n\n## Alternatives\n\n| Option | Why not |\n| --- | --- |\n| Many voices | A reader cannot tell who speaks |\n\n## Why\n\nOne reader.\n\n## Consequences\n\nEvery page is edited.\n\n## Bears on\n\n| Type | Entity | Owner | How |\n| --- | --- | --- | --- |\n| seat | Owner |  | made it |\n| decision-kind | Vocabulary |  | changed it |\n| seat | Owner |  | ended it |\n| seat | Writer |  | changed it |\n`);
+  execFileSync("git", ["-C", root, "add", "-A"]);
+  execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "The fixture"]);
 });
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -113,4 +115,19 @@ test("confidentiality is one level for every attribute, and only 0 to 3", () => 
   assert.ok(r.schemas.every((s) => s.attributes.every((a) => a.coshareConfidentiality === 0)));
   assert.ok(r.schemas.every((s) => s.attributes.every((a) => !("targetTypes" in a) && !("section" in a))), "a working field leaked into a bundle");
   assert.throws(() => convert(root, { confidentiality: 4 }), /0, 1, 2 or 3/);
+});
+
+test("--commit reads the instance as it was committed, not its working copy", () => {
+  const file = path.join(root, "model", "decisions", "2026-one-voice.md");
+  const committed = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, committed.replace("One reader.", "One reader, edited."));
+  try {
+    const now = decisionOf(convert(root)), then = convert(root, { commit: "HEAD" });
+    assert.match(now.attributes.markdown, /One reader, edited\./);
+    assert.equal(decisionOf(then).attributes.markdown, committed);
+    assert.equal(then.commit, execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim());
+    assert.throws(() => convert(root, { commit: "no-such-ref" }), /has no commit no-such-ref/);
+  } finally {
+    fs.writeFileSync(file, committed);
+  }
 });

@@ -10,6 +10,7 @@
   "scripts": {
     "convert": "node bin/convert.mjs",
     "load": "node bin/load.mjs",
+    "sync": "node bin/sync.mjs",
     "verify": "node bin/verify.mjs",
     "reset": "node bin/reset.mjs",
     "test": "node --test test/*.test.mjs"
