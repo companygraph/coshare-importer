@@ -1,0 +1,37 @@
+# Two ecosystems. GitHub Actions are what CI runs on, grouped so a quiet week is one pull request;
+# a bump is gated by the real check, test.yml running `npm test` on pull_request. The meta-model
+# parser is the one npm dependency, pinned by its npm version, which names its tag, and the pin is
+# editorial: moved when the owner decides and read against the instance it converts, so
+# Dependabot ignores it.
+#
+# The shape is copied from companygraph/mcp-server, deliberately.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    # Family pins move with the resync, never with Dependabot: conventions/PINS.md, Dependabot.
+    ignore:
+      - dependency-name: "@companygraph/meta-model"
+    schedule:
+      interval: "weekly"
+    # Zero, stated, because Dependabot applies three days when the key is absent and then offers
+    # the highest release older than that — for a package pinned by tag and released more than
+    # once a week, a DOWNGRADE. With zero, Dependabot sees the pinned release and proposes nothing.
+    cooldown:
+      default-days: 0
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    # Family pins move with the resync, never with Dependabot: conventions/PINS.md, Dependabot.
+    ignore:
+      - dependency-name: "*robertblust/conventions*"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
