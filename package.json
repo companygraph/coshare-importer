@@ -1,0 +1,20 @@
+{
+  "name": "@companygraph/coshare-importer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Loads a CompanyGraph instance into CoShare: the meta-model as schemas, the model as artifacts and links",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/companygraph/coshare-importer.git" },
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "convert": "node bin/convert.mjs",
+    "load": "node bin/load.mjs",
+    "verify": "node bin/verify.mjs",
+    "reset": "node bin/reset.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@companygraph/meta-model": "0.99.0"
+  }
+}

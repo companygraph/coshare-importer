@@ -11,3 +11,7 @@ Shared conventions of the robertblust, guestgraph and companygraph organizations
 
 Everything below this block is this repository's own. `sh conventions/conventions-sync check` says whether the copy matches the release, `sync` brings it to the release the pin names, and `sh conventions/conventions-check` holds this repository's own Markdown to `WRITING.md`, and `sh conventions/conventions-format` to its one form, which `fix` writes. Edit a shared file in robertblust/conventions, never here.
 <!-- end conventions -->
+
+## This repository
+
+The CoShare importer: it reads a CompanyGraph instance with `companygraph/meta-model`, at the release `package.json` pins, and loads it into a CoShare tenant as schemas, artifacts and links. One pin besides the conventions, moved only in a pull request: `package.json` names the parser's release. `lib/` converts and talks to CoShare, `bin/` holds the four commands, convert, load, verify and reset, and `docs/coshare.md` records what CoShare does and what the importer does about it; read it before changing how a load runs. The required checks on `main` are `conventions / conventions` and `test / test`. A load writes to a tenant: it needs a token in `COSHARE_JWT`, and it is run by hand, never by CI. Nothing here commits to an instance.
