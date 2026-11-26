@@ -2,7 +2,7 @@
 // COSHARE_JWT=… node bin/verify.mjs <bundles dir>
 //
 // Reads the tenant back and compares it with the bundles: each schema's state and version, every
-// artifact, every link with every property, every target of a multi-target reference, and the
+// artifact and its page, every link with every property, every target of a multi-target reference, and the
 // integrity report. Exits 1 on any difference.
 import fs from "node:fs";
 import path from "node:path";
@@ -43,9 +43,13 @@ const lists = (await cs.graphql("{ coshareSchemas(first: 500) { items { type lis
 let artifacts = 0;
 for (const s of S) {
   const field = lists.find((m) => m.type === s.coshareType)?.listField;
-  const ids = new Set(field ? ((await cs.graphql(`{ ${field}(first: 5000) { coshareUUID } }`)).data?.[field] ?? []).map((a) => a.coshareUUID) : []);
-  artifacts += ids.size;
-  for (const a of A.filter((a) => a.coshareType === s.coshareType)) if (!ids.has(a.coshareUUID)) problems.push(`artifact ${a.attributes.address} missing`);
+  const held = new Map(field ? ((await cs.graphql(`{ ${field}(first: 5000) { coshareUUID markdown } }`)).data?.[field] ?? []).map((a) => [a.coshareUUID, a.markdown]) : []);
+  artifacts += held.size;
+  for (const a of A.filter((a) => a.coshareType === s.coshareType)) {
+    if (!held.has(a.coshareUUID)) problems.push(`artifact ${a.attributes.address} missing`);
+    else if (held.get(a.coshareUUID) !== a.attributes.markdown) problems.push(`artifact ${a.attributes.address}: its page differs from the bundle's`);
+  }
+  for (const id of held.keys()) if (!A.some((a) => a.coshareUUID === id)) problems.push(`artifact ${id} of ${s.coshareType} is not in the bundle`);
 }
 console.log(`artifacts: ${artifacts} in CoShare, ${A.length} sent`);
 

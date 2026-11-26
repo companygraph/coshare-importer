@@ -7,13 +7,15 @@
 //    only a reference's first target, and editing a draft afterwards would raise its version.
 // 2. each schema is submitted for review and published, then its references are resolved.
 // 3. artifacts, in chunks of 50, pointed at CoShare's schema UUIDs.
-// 4. links: the artifact import drops them, so each artifact is PUT with its references, each link's
-//    properties are PATCHed, and every link is read back. A link whose target is not in the tenant
+// 4. links: the artifact import drops them, so each artifact is PUT with its values and its
+//    references, each link's properties are PATCHed, and every link is read back. A link whose target is not in the tenant
 //    yet waits for a later run.
 // Writes load-log.json (load-plan.json on a dry run) beside the bundles.
 import fs from "node:fs";
 import path from "node:path";
 import { client } from "../lib/coshare.mjs";
+import { writeArtifact } from "../lib/write.mjs";
+import { isLink } from "../lib/sync.mjs";
 
 const args = process.argv.slice(2);
 const dir = args[0];
@@ -93,7 +95,6 @@ const present = new Set();
 for (const a of selected) if (await exists(a)) present.add(a.coshareUUID);
 const toImport = selected.filter((a) => !present.has(a.coshareUUID) && byType.get(a.coshareType)?.coshareState === "PUBLISHED");
 step("artifacts", { selected: selected.length, alreadyThere: present.size, toImport: toImport.length, noPublishedSchema: selected.filter((a) => byType.get(a.coshareType)?.coshareState !== "PUBLISHED").length });
-const isLink = (v) => v && typeof v === "object" && ("refId" in v || (Array.isArray(v) && v[0]?.refId));
 for (let i = 0; i < toImport.length; i += 50) {
   const chunk = toImport.slice(i, i + 50).map((a) => ({ ...a, coshareSchemaUUID: byType.get(a.coshareType).coshareUUID, attributes: Object.fromEntries(Object.entries(a.attributes).filter(([, v]) => !isLink(v))) }));
   const r = await cs.importBundle("artifacts", "ARTIFACT", chunk);
@@ -109,38 +110,18 @@ const willExist = (id) => known.has(id) || (dry && artifactsIn.some((x) => x.cos
 
 // 4. links
 const schemaOfType = new Map(schemasIn.map((s) => [s.coshareType, s]));
-let put = 0, linked = 0, waiting = 0, props = 0, missing = 0;
+const t = { put: 0, linked: 0, waiting: 0, props: 0, missing: 0 };
 for (const a of selected) {
   if (!present.has(a.coshareUUID) && !dry) continue;
-  const s = byType.get(a.coshareType);
-  const want = {};
-  for (const at of schemaOfType.get(a.coshareType).attributes.filter((x) => x.coshareType === "REFERENCE")) {
-    const links = [].concat(a.attributes[at.coshareName] ?? []).filter(Boolean);
-    const ready = links.filter((l) => willExist(l.refId));
-    waiting += links.length - ready.length;
-    if (ready.length) want[at.coshareName] = { at, links: ready };
-  }
-  if (!Object.keys(want).length) continue;
-  const cur = dry ? null : (await cs.call("GET", `/schemas/${s.coshareTypeUUID}/artifacts/${a.coshareUUID}`)).json;
-  const body = Object.fromEntries(Object.entries(cur ?? {}).filter(([k]) => !k.startsWith("coshare") && !k.startsWith("_")));
-  for (const [n, { at, links }] of Object.entries(want)) body[n] = at.coshareCardinality === "ONE" ? { refId: links[0].refId, refLabel: links[0].refLabel } : links.map((l) => ({ refId: l.refId, refLabel: l.refLabel }));
-  const r = await cs.write("PUT", `/schemas/${s?.coshareTypeUUID}/artifacts/${a.coshareUUID}`, body);
-  if (!r.ok) { fail(`PUT ${a.attributes.address}`, r.text); continue; }
-  put++;
-  for (const [n, { links }] of Object.entries(want)) for (const l of links) {
-    linked++;
-    if (!l.properties) continue;
-    const p = await cs.write("PATCH", `/schemas/${s?.coshareTypeUUID}/artifacts/${a.coshareUUID}/references/${n}/${l.refId}`, l.properties);
-    if (p.ok) props++; else fail(`PATCH ${a.attributes.address} ${n}→${l.refLabel}`, p.text);
-  }
-  if (dry) continue;
-  const got = (await cs.call("GET", `/schemas/${s.coshareTypeUUID}/artifacts/${a.coshareUUID}/references`)).json?._embedded?.references ?? [];
-  for (const [n, { links }] of Object.entries(want)) {
-    const ids = new Set((got.find((g) => g.attribute === n)?.references ?? []).map((x) => x.refId));
-    for (const l of links) if (!ids.has(l.refId)) { missing++; fail(`readback ${a.attributes.address} ${n}→${l.refLabel}`, "link not there after the PUT"); }
-  }
+  const refAttrs = schemaOfType.get(a.coshareType).attributes.filter((x) => x.coshareType === "REFERENCE");
+  if (!refAttrs.some((at) => [].concat(a.attributes[at.coshareName] ?? []).filter(Boolean).length)) continue;
+  const r = await writeArtifact(cs, { typeUuid: byType.get(a.coshareType)?.coshareTypeUUID, artifact: a, refAttrs, exists: willExist });
+  for (const f of r.failures) fail("write", f);
+  for (const m of r.missing) fail("readback", `${m}: link not there after the PUT`);
+  if (!r.failures.some((f) => f.startsWith("PUT"))) t.put++;
+  t.linked += r.linked; t.props += r.props; t.waiting += r.waiting; t.missing += r.missing.length;
 }
-step("links", { artifactsPut: put, linksSent: linked, propertiesPatched: props, waitingForTargets: waiting, missingOnReadback: missing });
+step("links", { artifactsPut: t.put, linksSent: t.linked, propertiesPatched: t.props, waitingForTargets: t.waiting, missingOnReadback: t.missing });
 
 log.finishedAt = new Date().toISOString();
 fs.writeFileSync(path.join(dir, dry ? "load-plan.json" : "load-log.json"), JSON.stringify(log, null, 2));
