@@ -12,6 +12,12 @@ An attribute takes STRING, INTEGER, FLOAT, BOOLEAN, DATE, URL, MAIL, UUID, REFER
 
 A schema goes from draft through review to published: `submit-review`, then `publish`. An artifact path takes the schema's type UUID, `/schemas/{typeUuid}/artifacts/{id}`; the schema's own UUID there answers with an empty list and not with a 404.
 
+## Classification and groups
+
+An attribute carries `cosharePrivacy` and `coshareConfidentiality`, each a level from 0 to 3, and the import keeps both as sent; the front end shows them as `P<privacy>/C<confidentiality>` and counts an attribute with neither as level 2. Privacy runs from not personal through indirectly identifying and personal to a special category under GDPR articles 9 and 10, confidentiality from public through internal and confidential to strictly confidential.
+
+A schema can sort its attributes into groups, and a grouped attribute's value then sits inside an object named after its group, in REST and in GraphQL alike. The import keeps the groups and their attributes but drops a group's display name and order, and it drops a grouped value from an artifact without a word: only a `PUT` with the value nested under the group name stores it. A `PUT` of a reference nested under its group answers 200 and creates no link. The importer therefore sorts nothing into groups, and CoShare shows every attribute under Ungrouped Attributes.
+
 ## References
 
 A reference to another schema is stored as `@pending:<type>` until that schema is published and `POST /schemas/resolve-references` runs. A reference holds at most 10 target types. The import resolves the first target by its type name; every other entry becomes `@pending:unresolved:…`, whatever form it is sent in, except a schema UUID the tenant already holds. The importer therefore imports a schema whose reference names several types after the schemas it names are published, with their UUIDs written in, and a reference that reaches more than 10 types becomes one attribute per type that shares one relationship type.
