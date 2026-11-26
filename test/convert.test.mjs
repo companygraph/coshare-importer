@@ -16,7 +16,7 @@ before(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "coshare-importer-"));
   const bin = path.join(path.dirname(createRequire(import.meta.url).resolve("@companygraph/meta-model/instance")), "..", "bin", "companygraph.mjs");
   execFileSync("git", ["init", "-q", root]);
-  execFileSync(process.execPath, [bin, "init", root, "--here", "--name", "Fixture", "--gate", "none", "--no-hook"], { cwd: root, stdio: "ignore" });
+  execFileSync(process.execPath, [bin, "init", root, "--here", "--name", "Fixture", "--pack", "organization", "--gate", "none", "--no-hook"], { cwd: root, stdio: "ignore" });
   page("seats/owner.md", `---\nid: ${id(1)}\nsource: Local\n---\n\n# Owner\n\n> Answers for the company.\n`);
   page("seats/writer.md", `---\nid: ${id(2)}\nsource: Local\n---\n\n# Writer\n\n> Writes the English.\n`);
   page("decision-kinds/vocabulary.md", `---\nid: ${id(3)}\nsource: Local\n---\n\n# Vocabulary\n\n> A call about the words.\n\n## What it means\n\nThe words a model uses.\n`);
@@ -33,7 +33,7 @@ test("every type the vocabulary declares becomes a schema at its unit's version"
   const decision = r.schemas.find((s) => s.coshareType === "cg_decision");
   assert.equal(decision.coshareVersion, `v${core}`);
   assert.equal(decision.coshareCategory, "companygraph-core");
-  const files = fs.readdirSync(path.join(root, "meta", "core")).filter((f) => f.endsWith("-schema.md"));
+  const files = ["core", "organization"].flatMap((unit) => fs.readdirSync(path.join(root, "meta", unit)).filter((f) => f.endsWith("-schema.md")));
   assert.equal(r.schemas.length, files.length);
   for (const s of r.schemas) {
     assert.match(s.coshareType, /^cg_[a-z0-9_]+$/);
@@ -96,4 +96,21 @@ test("only the named types are converted, and the report counts what was", () =>
   assert.deepEqual(r.schemas.map((s) => s.coshareType).sort(), ["cg_decision", "cg_seat"]);
   assert.deepEqual([...new Set(r.artifacts.map((a) => a.coshareType))].sort(), [typeName("decision"), typeName("seat")]);
   assert.match(report(r), /\| Artifacts, one per page \| 3 \|/);
+});
+
+test("a person's attributes are personal, a reference to a person identifies one indirectly, the rest is not personal", () => {
+  const r = convert(root);
+  const attrs = (type) => r.schemas.find((s) => s.coshareType === type).attributes;
+  assert.ok(attrs("cg_profile").every((a) => a.cosharePrivacy === 2), "a profile attribute is not personal");
+  assert.ok(attrs("cg_experience").every((a) => a.cosharePrivacy === 2), "an experience, owned by a profile, is not personal");
+  assert.equal(attrs("cg_group").find((a) => a.coshareName === "people").cosharePrivacy, 1);
+  assert.ok(attrs("cg_decision").every((a) => a.cosharePrivacy === 0));
+  assert.ok(r.schemas.every((s) => s.attributes.every((a) => !("coshareConfidentiality" in a))), "confidentiality was set without being asked");
+});
+
+test("confidentiality is one level for every attribute, and only 0 to 3", () => {
+  const r = convert(root, { confidentiality: 0 });
+  assert.ok(r.schemas.every((s) => s.attributes.every((a) => a.coshareConfidentiality === 0)));
+  assert.ok(r.schemas.every((s) => s.attributes.every((a) => !("targetTypes" in a) && !("section" in a))), "a working field leaked into a bundle");
+  assert.throws(() => convert(root, { confidentiality: 4 }), /0, 1, 2 or 3/);
 });

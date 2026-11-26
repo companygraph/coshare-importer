@@ -24,6 +24,21 @@ for (const s of S) {
 }
 console.log(`schemas: ${remote.length} in CoShare, ${S.length} sent`);
 
+// Each attribute's classification, privacy and confidentiality, as sent.
+let classified = 0;
+for (const s of S) {
+  const r = byType.get(s.coshareType);
+  if (!r) continue;
+  const got = new Map(((await cs.call("GET", `/schemas/${r.coshareUUID}/attributes`)).json?.items ?? []).map((a) => [a.coshareName, a]));
+  for (const a of s.attributes) {
+    const g = got.get(a.coshareName);
+    if (!g) { problems.push(`attribute ${s.coshareType}.${a.coshareName} missing`); continue; }
+    const differ = ["cosharePrivacy", "coshareConfidentiality"].filter((k) => (a[k] ?? null) !== (g[k] ?? null));
+    if (differ.length) problems.push(`attribute ${s.coshareType}.${a.coshareName}: ${differ.map((k) => `${k} ${g[k] ?? "unset"}, sent ${a[k] ?? "unset"}`).join("; ")}`); else classified++;
+  }
+}
+console.log(`attributes: ${classified} of ${S.reduce((n, s) => n + s.attributes.length, 0)} classified as sent`);
+
 const lists = (await cs.graphql("{ coshareSchemas(first: 500) { items { type listField } } }")).data.coshareSchemas.items;
 let artifacts = 0;
 for (const s of S) {
