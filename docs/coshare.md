@@ -8,7 +8,7 @@ GraphQL cannot register a schema. It is generated from the published schemas, wi
 
 `uuidHandling` takes `REGENERATE` or `PRESERVE_INTERNAL`; `PRESERVE`, which the front end lists, is refused. Under `PRESERVE_INTERNAL` an artifact keeps its UUID and a schema does not, although the response maps every schema UUID to itself. The importer therefore points each artifact at the schema UUID the tenant reports before it imports the artifact.
 
-An attribute takes STRING, INTEGER, FLOAT, BOOLEAN, DATE, URL, MAIL, UUID, REFERENCE, FILE or an array of one of them, such as STRING_ARRAY. `TEXT` is offered in the schema editor and refused by the import, so prose and whole pages are STRING. A schema keeps the `coshareVersion` it is imported with, but editing a draft raises its patch version.
+An attribute takes STRING, INTEGER, FLOAT, BOOLEAN, DATE, URL, MAIL, UUID, REFERENCE, FILE or an array of one of them, such as STRING_ARRAY. `TEXT` is offered in the schema editor and refused by the import, so prose and whole pages are STRING, and the record view shows a STRING as written: a section's Markdown table reads as one line of pipes. A schema keeps the `coshareVersion` it is imported with, but editing a draft raises its patch version.
 
 A schema goes from draft through review to published: `submit-review`, then `publish`. An artifact path takes the schema's type UUID, `/schemas/{typeUuid}/artifacts/{id}`; the schema's own UUID there answers with an empty list and not with a 404.
 

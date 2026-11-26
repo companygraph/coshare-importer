@@ -37,7 +37,7 @@ The first two cost the most: together they are why a load needs two passes and a
 | 4 | Allow more than one link from one attribute to the same target | Links are keyed by artifact, attribute and target: 10 use-case steps by 2 actors came back as 2 links | 31 table rows merged into 17 links; each column's values joined with line breaks, `row` lists the rows |
 | 5 | Keep the version set at import when a draft is edited | Editing one attribute of a draft moved v0.71.0 to v0.71.2 | The fill-in step had to go, and the whole model was loaded again |
 | 6 | Keep schema UUIDs on import, or report the mapping that was applied | With `PRESERVE_INTERNAL`, schema UUIDs are replaced while the response maps each to itself; artifact UUIDs are kept. `PRESERVE`, listed in the front end, is refused | Every artifact re-pointed at the new schema UUIDs before its import |
-| 7 | A long-text type | `TEXT` is offered in the schema editor; the import refuses it: `No enum constant … AttributeType.TEXT` | Prose and whole pages up to 7,084 characters sit in STRING. It works, but the type says nothing about the content |
+| 7 | A long-text type that the record view renders as Markdown | `TEXT` is offered in the schema editor; the import refuses it: `No enum constant … AttributeType.TEXT`. The record view shows a STRING as written, so a Markdown table reads as one line of pipes, as a Snapshot's state transitions do | Prose and whole pages up to 7,084 characters sit in STRING. Nothing is lost, but the type says nothing about the content, and a reader in CoShare sees Markdown instead of the table or list it is |
 
 ## Smaller findings
 
