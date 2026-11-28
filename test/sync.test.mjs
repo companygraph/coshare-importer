@@ -30,3 +30,10 @@ test("a schema that changed names each attribute and what changed in it", () => 
   assert.deepEqual(schemaDifferences(schema, [liveOf()[0]], targetsOf), ["cg_decision.kind is new"]);
   assert.deepEqual(schemaDifferences({ ...schema, attributes: [ref] }, liveOf(), targetsOf), ["cg_decision.kind is gone"]);
 });
+
+test("a table reference that stops or starts taking one link per row is a difference", () => {
+  const repeatable = { ...schema, attributes: [{ ...ref, coshareRefRepeatable: true }, text] };
+  assert.deepEqual(schemaDifferences(repeatable, liveOf(), targetsOf), ["cg_decision.by: repeatable differ"]);
+  assert.deepEqual(schemaDifferences(repeatable, liveOf({ ref: { coshareRefRepeatable: true } }), targetsOf), []);
+  assert.deepEqual(schemaDifferences(schema, liveOf({ ref: { coshareRefRepeatable: false } }), targetsOf), []);
+});

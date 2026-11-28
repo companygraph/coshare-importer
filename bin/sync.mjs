@@ -4,8 +4,9 @@
 // Brings a tenant that already holds the instance to the instance at a commit, its working copy
 // by default, and writes only what differs:
 // - a page the tenant does not hold is imported, with its links;
-// - a page whose markdown differs from the tenant's is written again, values and its whole link
-//   set, so a link the page no longer names is removed;
+// - a page whose markdown differs from the tenant's is written again with a PUT, its values and
+//   its whole link set, so a link the page no longer names is removed; the links other artifacts
+//   have to it stay;
 // - an artifact whose page is gone is deleted.
 // A page whose markdown the tenant already holds is left alone, and so is the commit it was last
 // written at. The schemas must be the tenant's as they are: a changed schema cannot be changed in
@@ -16,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { convert, report } from "../lib/convert.mjs";
 import { client } from "../lib/coshare.mjs";
-import { planArtifacts, schemaDifferences, isLink } from "../lib/sync.mjs";
+import { planArtifacts, schemaDifferences } from "../lib/sync.mjs";
 import { writeArtifact } from "../lib/write.mjs";
 
 const args = process.argv.slice(2);
@@ -35,7 +36,7 @@ const bundle = (bundleType, items) => ({ bundleType, bundleVersion: 1, exportedA
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, "schemas.bundle.json"), JSON.stringify(bundle("SCHEMA", r.schemas), null, 2));
 fs.writeFileSync(path.join(out, "artifacts.bundle.json"), JSON.stringify(bundle("ARTIFACT", r.artifacts), null, 2));
-fs.writeFileSync(path.join(out, "targets.json"), JSON.stringify(r.targets, null, 2));
+fs.rmSync(path.join(out, "targets.json"), { force: true }); // written by importers before 2026-11-28
 fs.writeFileSync(path.join(out, "report.md"), report(r));
 step("instance", { name: r.instance, commit: r.commit, schemas: r.counts.schemas, artifacts: r.counts.artifacts, links: r.counts.links });
 
@@ -50,8 +51,7 @@ for (const s of r.schemas) {
   if (!live) continue;
   if (live.coshareState !== "PUBLISHED") { differences.push(`${s.coshareType} is ${live.coshareState}`); continue; }
   const attrs = (await cs.call("GET", `/schemas/${live.coshareUUID}/attributes`)).json?.items ?? [];
-  const targetsOf = (a) => (r.targets.find((t) => t.type === s.coshareType && t.attribute === a.coshareName)?.targets ?? [a.coshareRefSchemaType]).map((t) => byType.get(t)?.coshareUUID);
-  differences.push(...schemaDifferences(s, attrs, targetsOf));
+  differences.push(...schemaDifferences(s, attrs, (a) => a.coshareRefSchemaIds));
 }
 step("schemas", { compared: r.schemas.length, differences: differences.length });
 if (differences.length) {
@@ -72,34 +72,37 @@ for (const s of remote) {
 const plan = planArtifacts(r.artifacts, live);
 step("plan", { added: plan.added.length, changed: plan.changed.length, removed: plan.removed.length, unchanged: plan.unchanged.length, pages: [...plan.added, ...plan.changed].map((a) => a.attributes.address).slice(0, 20) });
 
-// Added pages: imported first, so a changed page's link can point at one.
-const exists = new Set(live.keys());
+// Added pages in one import, a link to a page later in the import waiting for it; then each changed
+// page written over its artifact.
+const t = { imported: 0, partial: 0, waiting: 0, dropped: 0, written: 0, deleted: 0 };
 for (let i = 0; i < plan.added.length; i += 50) {
-  const chunk = plan.added.slice(i, i + 50).map((a) => ({ ...a, coshareSchemaUUID: byType.get(a.coshareType).coshareUUID, attributes: Object.fromEntries(Object.entries(a.attributes).filter(([, v]) => !isLink(v))) }));
+  const chunk = plan.added.slice(i, i + 50);
   const res = await cs.importBundle("artifacts", "ARTIFACT", chunk);
-  if (res.dry) { for (const a of chunk) exists.add(a.coshareUUID); continue; }
-  for (const it of res.json?.items ?? []) if (it.status === "SUCCESS") exists.add(chunk[it.index].coshareUUID); else fail(`import ${chunk[it.index]?.attributes.address}`, it.error);
+  if (res.dry) continue;
+  for (const it of res.json?.items ?? []) {
+    const a = chunk[it.index];
+    if (it.status === "SUCCESS") { t.imported++; continue; }
+    if (it.status !== "PARTIAL") { fail(`import ${a?.attributes.address}`, it.error ?? JSON.stringify(it)); continue; }
+    t.imported++; t.partial++;
+    for (const f of it.failedReferences ?? []) if (f.waiting) t.waiting++; else { t.dropped++; fail(`link ${a.attributes.address}.${f.attribute} → ${f.refLabel}`, f.reason); }
+  }
 }
-// Removed pages leave before links are written, so no link is written to an artifact about to go.
+const schemaOfType = new Map(r.schemas.map((s) => [s.coshareType, s]));
+for (const a of plan.changed) {
+  const refAttrs = schemaOfType.get(a.coshareType).attributes.filter((x) => x.coshareType === "REFERENCE");
+  const res = await writeArtifact(cs, { typeUuid: byType.get(a.coshareType).coshareTypeUUID, artifact: a, refAttrs });
+  if (res.ok) t.written++; else fail(`write ${a.attributes.address}`, res.text);
+}
 for (const a of plan.removed) {
   const res = await cs.write("DELETE", `/schemas/${byType.get(a.coshareType).coshareTypeUUID}/artifacts/${a.coshareUUID}?force=true`);
-  if (res.ok) exists.delete(a.coshareUUID); else fail(`delete ${a.coshareType} ${a.coshareUUID}`, res.text);
+  if (res.ok) t.deleted++; else fail(`delete ${a.coshareType} ${a.coshareUUID}`, res.text);
 }
-
-// Values and links, for every added and changed page.
-const schemaOfType = new Map(r.schemas.map((s) => [s.coshareType, s]));
-const t = { written: 0, linked: 0, props: 0, waiting: 0, missing: 0, extra: 0 };
-for (const a of [...plan.added, ...plan.changed]) {
-  if (!exists.has(a.coshareUUID)) continue;
-  const refAttrs = schemaOfType.get(a.coshareType).attributes.filter((x) => x.coshareType === "REFERENCE");
-  const w = await writeArtifact(cs, { typeUuid: byType.get(a.coshareType).coshareTypeUUID, artifact: a, refAttrs, exists: (id) => exists.has(id), clear: true });
-  for (const f of w.failures) fail("write", f);
-  for (const m of w.missing) fail("readback", `${m}: link not there after the PUT`);
-  for (const x of w.extra) fail("readback", `${x}: link still there after the PUT`);
-  if (!w.failures.some((f) => f.startsWith("PUT"))) t.written++;
-  t.linked += w.linked; t.props += w.props; t.waiting += w.waiting; t.missing += w.missing.length; t.extra += w.extra.length;
+if (!cs.dry) {
+  const waiting = ((await cs.call("GET", "/artifacts/unresolved-references")).json?.unresolvedReferences ?? []).filter((u) => u.refSchemaType?.startsWith("cg_"));
+  for (const u of waiting.slice(0, 20)) fail(`link ${u.sourceArtifactId}.${u.attribute} → ${u.refLabel}`, "still waits for its target");
+  t.stillWaiting = waiting.length;
 }
-step("written", { artifacts: t.written, links: t.linked, propertiesPatched: t.props, waitingForTargets: t.waiting, missingOnReadback: t.missing, extraOnReadback: t.extra, deleted: plan.removed.length });
+step("written", t);
 
 log.finishedAt = new Date().toISOString();
 fs.writeFileSync(path.join(out, cs.dry ? "sync-plan.json" : "sync-log.json"), JSON.stringify(log, null, 2));
