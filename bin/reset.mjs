@@ -4,9 +4,10 @@
 // Removes everything the importer put into a tenant: every artifact and schema whose type starts
 // with cg_. Nothing else is touched. Artifacts and drafts are deleted outright. A published schema
 // can only be walked out: deprecate, decommission, archive, purgable and, after CoShare's retention
-// period, purge. Purges run in passes until one makes no progress, since a purge refused while the
-// retention period runs succeeds on a later pass. A purged schema keeps its UUID in the tenant, so
-// the same schemas cannot be loaded into it again.
+// period, purge. A purged schema stays listed, and keeps its UUID, until it is purged a second
+// time, which removes it, so the same schemas can be loaded again. Purges run in passes until no
+// cg_ schema is listed or a pass makes no progress, since a purge refused while the retention
+// period runs succeeds on a later pass.
 import { client } from "../lib/coshare.mjs";
 
 const cs = client({ dry: process.argv.includes("--dry-run") });
@@ -41,21 +42,23 @@ for (const s of schemas) {
 }
 if (cs.dry) process.exit(0);
 
-// Purges, in passes, after the retention period.
-let left = (await ours()).filter((s) => s.coshareState === "PURGED");
+// Purges, in passes, after the retention period, read from the whole list: cs.schemas() leaves
+// purged schemas out.
+const listed = async () => ((await cs.call("GET", "/schemas")).json?.data ?? []).filter((s) => s.coshareType.startsWith("cg_"));
+let left = await listed();
 for (let pass = 1; left.length; pass++) {
   let progress = false;
   for (const s of left) {
     const r = await cs.transition(s.coshareUUID, "purge");
-    if (r.ok) { progress = true; console.log(`purged ${s.coshareType} ${s.coshareVersion}`); continue; }
+    if (r.ok) { progress = true; console.log(`${s.coshareState === "PURGED" ? "removed" : "purged"} ${s.coshareType} ${s.coshareVersion}`); continue; }
     const until = r.json?.message?.match(/expires at: (.*)$/)?.[1];
     const ms = until ? Date.parse(until) - Date.now() + 3000 : NaN;
     if (ms > 0 && ms < 600000) { console.log(`  retention: waiting ${Math.ceil(ms / 1000)}s`); await wait(ms); progress = true; break; }
     console.log(`  pass ${pass}: ${s.coshareType} ${s.coshareVersion}: ${r.status} ${r.json?.code ?? ""} ${r.json?.message ?? r.text.slice(0, 120)}`);
   }
-  left = (await ours()).filter((s) => s.coshareState === "PURGED");
+  left = await listed();
   if (!progress) break;
 }
-const end = await ours();
+const end = await listed();
 console.log(`left in CoShare: ${end.length ? end.map((s) => `${s.coshareType} ${s.coshareVersion} ${s.coshareState}`).join(", ") : "nothing"}`);
 process.exitCode = end.length ? 1 : 0;
