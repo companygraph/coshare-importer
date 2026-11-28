@@ -19,3 +19,14 @@ test("a PUT carries the values and the whole link set, each link with its proper
     replaces: [],
   });
 });
+
+test("a PUT nests a grouped reference under its group, beside the group's values", () => {
+  const grouped = [{ ...refAttrs[0], group: null }, { ...refAttrs[1], group: "bears_on" }, { ...refAttrs[2], group: "history" }];
+  const artifact = { attributes: { name: "A call", bears_on: { bears_on_text: "| a |" }, companygraph: { unmapped: null, address: "x" } }, references: [link("kind", "k"), link("bears_on", "o", { row: "1" })] };
+  assert.deepEqual(putBody(artifact, grouped), {
+    name: "A call", companygraph: { address: "x" },
+    kind: { refId: "k", refLabel: "K" },
+    bears_on: { bears_on_text: "| a |", bears_on: [{ refId: "o", refLabel: "O", properties: { row: "1" } }] },
+    history: { replaces: [] },
+  });
+});

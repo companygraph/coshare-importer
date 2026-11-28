@@ -9,7 +9,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { client } from "../lib/coshare.mjs";
-import { versionHolds } from "../lib/sync.mjs";
+import { versionHolds, addressOf, groupPlan } from "../lib/sync.mjs";
+import { flatAttributes } from "../lib/convert.mjs";
 
 const dir = process.argv[2];
 if (!dir) { console.error("usage: COSHARE_JWT=… node bin/verify.mjs <bundles dir>"); process.exit(2); }
@@ -35,11 +36,18 @@ let classified = 0, targeted = 0, references = 0;
 for (const s of S) {
   const r = byType.get(s.coshareType);
   if (!r) continue;
-  const got = new Map(((await cs.call("GET", `/schemas/${r.coshareUUID}/attributes`)).json?.items ?? []).map((a) => [a.coshareName, a]));
-  for (const n of got.keys()) if (!s.attributes.some((a) => a.coshareName === n)) problems.push(`attribute ${s.coshareType}.${n} is not in the bundle`);
-  for (const a of s.attributes) {
+  const got = new Map((await cs.attributes(r.coshareUUID)).map((a) => [a.coshareName, a]));
+  const sent = flatAttributes(s);
+  for (const n of got.keys()) if (!sent.some((a) => a.coshareName === n)) problems.push(`attribute ${s.coshareType}.${n} is not in the bundle`);
+  // Each group with its display name, description and order, and each attribute in its group.
+  const gp = groupPlan(s, await cs.groups(r.coshareUUID));
+  for (const n of gp.added) problems.push(`group ${s.coshareType}.${n} missing`);
+  for (const n of gp.removed) problems.push(`group ${s.coshareType}.${n} is not in the bundle`);
+  for (const c of gp.changed) problems.push(`group ${s.coshareType}.${c.name}: ${c.what.join(", ")} differ`);
+  for (const a of sent) {
     const g = got.get(a.coshareName);
     if (!g) { problems.push(`attribute ${s.coshareType}.${a.coshareName} missing`); continue; }
+    if ((g.group ?? null) !== a.group) problems.push(`attribute ${s.coshareType}.${a.coshareName}: in group ${g.group}, sent ${a.group}`);
     const differ = ["cosharePrivacy", "coshareConfidentiality"].filter((k) => (a[k] ?? null) !== (g[k] ?? null));
     if (differ.length) problems.push(`attribute ${s.coshareType}.${a.coshareName}: ${differ.map((k) => `${k} ${g[k] ?? "unset"}, sent ${a[k] ?? "unset"}`).join("; ")}`); else classified++;
     if (a.coshareType !== "REFERENCE") continue;
@@ -52,7 +60,7 @@ for (const s of S) {
     else problems.push(`reference ${s.coshareType}.${a.coshareName}: targets ${JSON.stringify(types)}${stale.length ? `, ${stale.length} not at the published version` : ""}, repeatable ${!!g.coshareRefRepeatable}`);
   }
 }
-console.log(`attributes: ${classified} of ${S.reduce((n, s) => n + s.attributes.length, 0)} classified as sent`);
+console.log(`attributes: ${classified} of ${S.reduce((n, s) => n + flatAttributes(s).length, 0)} classified as sent, in ${S.reduce((n, s) => n + (s.groups?.length ?? 0), 0)} groups`);
 console.log(`references: ${targeted} of ${references} with every target as sent`);
 
 const lists = (await cs.graphql("{ coshareSchemas(first: 500) { items { type listField } } }")).data.coshareSchemas.items;
@@ -61,13 +69,21 @@ const sameValue = (x, y) => JSON.stringify(x ?? null) === JSON.stringify(y ?? nu
 let artifacts = 0, values = 0, exactValues = 0;
 for (const s of S) {
   const field = lists.find((m) => m.type === s.coshareType)?.listField;
-  const names = s.attributes.filter((a) => a.coshareType !== "REFERENCE").map((a) => a.coshareName);
-  const held = new Map(field ? ((await cs.graphql(`{ ${field}(first: 5000) { coshareUUID ${names.join(" ")} } }`)).data?.[field] ?? []).map((a) => [a.coshareUUID, a]) : []);
+  // A grouped value is read under its group, as GraphQL nests it.
+  const plain = flatAttributes(s).filter((a) => a.coshareType !== "REFERENCE");
+  const top = plain.filter((a) => !a.group).map((a) => a.coshareName);
+  const inGroups = (s.groups ?? []).map((g) => [g.coshareName, g.attributes.filter((a) => a.coshareType !== "REFERENCE").map((a) => a.coshareName)]).filter(([, n]) => n.length);
+  const fields = [...top, ...inGroups.map(([g, n]) => `${g} { ${n.join(" ")} }`)].join(" ");
+  const at = (o, a) => (a.group ? o?.[a.group]?.[a.coshareName] : o?.[a.coshareName]);
+  const answer = field ? await cs.graphql(`{ ${field}(first: 5000) { coshareUUID ${fields} } }`) : null;
+  // A refused query is a difference of its own: the tenant's schema does not have the fields the bundle names.
+  if (answer?.errors?.length) { problems.push(`artifacts of ${s.coshareType}: CoShare refused the query for their values: ${answer.errors[0].message.slice(0, 160)}`); continue; }
+  const held = new Map((answer?.data?.[field] ?? []).map((a) => [a.coshareUUID, a]));
   artifacts += held.size;
   for (const a of A.filter((a) => a.coshareType === s.coshareType)) {
     const h = held.get(a.coshareUUID);
-    if (!h) { problems.push(`artifact ${a.attributes.address} missing`); continue; }
-    for (const n of names) { values++; if (sameValue(h[n], a.attributes[n])) exactValues++; else problems.push(`artifact ${a.attributes.address}: ${n} differs from the bundle's`); }
+    if (!h) { problems.push(`artifact ${addressOf(a)} missing`); continue; }
+    for (const x of plain) { values++; if (sameValue(at(h, x), at(a.attributes, x))) exactValues++; else problems.push(`artifact ${addressOf(a)}: ${x.group ? `${x.group}.` : ""}${x.coshareName} differs from the bundle's`); }
   }
   for (const id of held.keys()) if (!A.some((a) => a.coshareUUID === id)) problems.push(`artifact ${id} of ${s.coshareType} is not in the bundle`);
 }
@@ -85,9 +101,9 @@ for (const a of A) {
     links++;
     const i = got.findIndex((g) => g.attribute === l.attribute && same(l, g));
     if (i >= 0) { got.splice(i, 1); exact++; continue; }
-    problems.push(got.some((g) => g.attribute === l.attribute && g.refId === l.refId) ? `link ${a.attributes.address}.${l.attribute} → ${l.refLabel}: properties differ` : `link ${a.attributes.address}.${l.attribute} → ${l.refLabel} missing`);
+    problems.push(got.some((g) => g.attribute === l.attribute && g.refId === l.refId) ? `link ${addressOf(a)}.${l.attribute} → ${l.refLabel}: properties differ` : `link ${addressOf(a)}.${l.attribute} → ${l.refLabel} missing`);
   }
-  for (const g of got) problems.push(`link ${a.attributes.address}.${g.attribute} → ${g.refLabel} is not in the bundle`);
+  for (const g of got) problems.push(`link ${addressOf(a)}.${g.attribute} → ${g.refLabel} is not in the bundle`);
 }
 console.log(`links: ${exact} of ${links} present with every property`);
 
