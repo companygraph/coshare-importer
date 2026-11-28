@@ -12,7 +12,7 @@ The load is now two imports and the publishing between them. The schemas go in o
 | 2 | Every target resolved by type name | All targets resolve once published, the schemas in any order | One pass over the schemas |
 | 3 | More than 10 targets | `question.rests_on` holds its 23 | One attribute, not 23 |
 | 4 | Several links to one target | `coshareRefRepeatable`, each link with its own `linkId` | One link per table row, merging gone |
-| 5 | Keep the version on a draft edit | `?keepVersion=true` | Not needed: nothing edits a draft |
+| 5 | Keep the version on a draft edit | `?keepVersion=true` | Not needed by a load; a new schema version will edit its draft with it |
 | 6 | Keep schema UUIDs | Kept under `PRESERVE_INTERNAL` | A schema's CoShare UUID is its vocabulary id |
 | 7 | A long-text type rendered as Markdown | `TEXT`, up to 30,000 characters | Prose, pages and taglines are TEXT |
 
@@ -25,17 +25,20 @@ Four behaviors came to light while the importer was reworked; each is recorded i
 | What we saw | What we ask |
 | --- | --- |
 | An `OVERWRITE` import of an artifact that other artifacts link to answers `SUCCESS` and writes nothing; an artifact nothing links to is overwritten | Overwrite it, or refuse it with a reason |
-| A purged schema keeps its UUID, and an import under it is refused as a conflict, so a tenant cannot take an instance's schemas again after a reset | Free the UUID on purge, or offer a purge that does |
 | A link sent without `refOriginUUID` to an artifact not yet loaded is lost with `waiting: false`, and `POST /artifacts/resolve-references` does not bring it back | Let such a link wait by `refId`, or say in the answer that it is lost for good |
 | `GET /schemas` lists purged schemas beside the current schema of the same type | Leave purged schemas out unless asked for |
+| A purged schema keeps its UUID, and an import under it is refused as a conflict, so a test tenant cannot take an instance's schemas again after a reset | Free the UUID on purge, or offer a purge that does |
 
 A link's label also keeps the target's old name after the target is renamed, which matters only to a reader who sees the label without following the link.
+
+The last finding matters only to a clean reload. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for: a draft created from the published version with a patch, minor or major bump, edited with `keepVersion`, published over the previous version, and the artifacts migrated to it. The importer does not do that yet; `bin/sync.mjs` stops on a changed schema.
 
 `bin/sync.mjs` writes a changed page with a `PUT` that carries the page's values and its whole link set with every link's properties, because of the first finding; it was tried by syncing the tenant back to `c439b16` and forward to `07822bf` again, five pages each way, with `bin/verify.mjs` clean after each.
 
 ## Open
 
-- [ ] Ask CoShare about the four findings above, the purged UUID first: until it is freed, a changed schema can only reach this tenant as a new schema version, which is untested.
+- [ ] Ask CoShare about the four findings above.
+- [ ] Bring a changed schema to a tenant as a new version of its type, with its artifacts migrated, instead of stopping the sync.
 - [ ] Decide whether `markdown` stays now that no CoShare limitation requires it.
 - [ ] Try grouped attributes again.
 - [ ] Load a second instance, to see what generalizes beyond mental-model.
