@@ -2,20 +2,18 @@
 // COSHARE_JWT=… node bin/load.mjs <bundles dir> [--only <type,type>] [--dry-run]
 //
 // Loads what bin/convert.mjs wrote into a CoShare tenant, leaving every type already there as it is:
-// 1. schemas, in two passes: those with a reference to several target types go second, once their
-//    targets are published, with the targets' CoShare UUIDs already set. CoShare's import resolves
-//    only a reference's first target, and editing a draft afterwards would raise its version.
-// 2. each schema is submitted for review and published, then its references are resolved.
-// 3. artifacts, in chunks of 50, pointed at CoShare's schema UUIDs.
-// 4. links: the artifact import drops them, so each artifact is PUT with its values and its
-//    references, each link's properties are PATCHed, and every link is read back. A link whose target is not in the tenant
-//    yet waits for a later run.
+// 1. the schemas, in one import: each keeps the UUID it is sent with, and a reference names every
+//    target by UUID and by type name, so it resolves once its targets are published.
+// 2. each schema is submitted for review and published, then the references are resolved, and
+//    each schema's UUID, version and reference targets are read back.
+// 3. the artifacts, in chunks of 50, each with its links and their properties. A link whose
+//    target is not in the tenant yet waits for it, by the target's UUID, and is made when the
+//    target arrives, in the same import or a later one.
+// 4. what still waits: every link should have found its target once all artifacts are in.
 // Writes load-log.json (load-plan.json on a dry run) beside the bundles.
 import fs from "node:fs";
 import path from "node:path";
 import { client } from "../lib/coshare.mjs";
-import { writeArtifact } from "../lib/write.mjs";
-import { isLink } from "../lib/sync.mjs";
 
 const args = process.argv.slice(2);
 const dir = args[0];
@@ -32,96 +30,80 @@ const read = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
 
 const schemasIn = read("schemas.bundle.json").items;
 const artifactsIn = read("artifacts.bundle.json").items;
-const targets = fs.existsSync(path.join(dir, "targets.json")) ? read("targets.json") : [];
 const pick = (t) => !only || only.includes(t);
 const ours = (list) => list.filter((s) => s.coshareType.startsWith("cg_"));
 
 // 1–2. schemas
-const later = new Set(targets.map((f) => f.type));
 const have = new Set((await cs.schemas()).map((s) => s.coshareType));
 const wanted = schemasIn.filter((s) => pick(s.coshareType));
-step("schemas", { selected: wanted.length, alreadyThere: wanted.filter((s) => have.has(s.coshareType)).map((s) => s.coshareType), toImport: wanted.filter((s) => !have.has(s.coshareType)).length, secondPass: wanted.filter((s) => later.has(s.coshareType) && !have.has(s.coshareType)).map((s) => s.coshareType) });
-
-async function importAndPublish(label, items) {
-  if (!items.length) return;
-  const r = await cs.importBundle("schemas", "SCHEMA", items);
-  if (r.dry) return;
-  step(`${label} imported`, { http: r.status, succeeded: r.json?.succeeded, failed: r.json?.failed });
-  for (const it of r.json?.items ?? []) if (it.status !== "SUCCESS") fail(`schema ${items[it.index]?.coshareType}`, it.error);
-  const now = new Map((await cs.schemas()).map((s) => [s.coshareType, s]));
-  for (const it of items) {
-    const x = now.get(it.coshareType);
-    if (!x) { fail(`publish ${it.coshareType}`, "not in CoShare after import"); continue; }
-    if (x.coshareVersion !== it.coshareVersion) fail(`version ${it.coshareType}`, `sent ${it.coshareVersion}, CoShare has ${x.coshareVersion}`);
-    for (const t of x.coshareState === "PUBLISHED" ? [] : x.coshareState === "REVIEW" ? ["publish"] : ["submit-review", "publish"]) {
-      const y = await cs.transition(x.coshareUUID, t);
-      if (!y.ok) { fail(`${t} ${it.coshareType}`, y.text); break; }
+const toImport = wanted.filter((s) => !have.has(s.coshareType));
+step("schemas", { selected: wanted.length, alreadyThere: wanted.filter((s) => have.has(s.coshareType)).map((s) => s.coshareType), toImport: toImport.length });
+if (toImport.length) {
+  const r = await cs.importBundle("schemas", "SCHEMA", toImport);
+  if (!r.dry) {
+    step("schemas imported", { http: r.status, succeeded: r.json?.succeeded, failed: r.json?.failed });
+    for (const it of r.json?.items ?? []) if (it.status !== "SUCCESS") fail(`schema ${toImport[it.index]?.coshareType}`, it.error ?? JSON.stringify(it));
+    const now = new Map((await cs.schemas()).map((s) => [s.coshareType, s]));
+    for (const it of toImport) {
+      const x = now.get(it.coshareType);
+      if (!x) { fail(`publish ${it.coshareType}`, "not in CoShare after import"); continue; }
+      for (const t of x.coshareState === "PUBLISHED" ? [] : x.coshareState === "REVIEW" ? ["publish"] : ["submit-review", "publish"]) {
+        const y = await cs.transition(x.coshareUUID, t);
+        if (!y.ok) { fail(`${t} ${it.coshareType}`, y.text); break; }
+      }
     }
+    const res = await cs.write("POST", "/schemas/resolve-references", { schemaUUIDs: ours(await cs.schemas()).map((s) => s.coshareUUID) });
+    step("resolve-references", res.json ?? { http: res.status });
   }
-  const res = await cs.write("POST", "/schemas/resolve-references", { schemaUUIDs: ours(await cs.schemas()).map((s) => s.coshareUUID) });
-  if (!res.dry) step(`${label} resolve-references`, res.json ?? { http: res.status });
 }
-
-await importAndPublish("pass 1", wanted.filter((s) => !have.has(s.coshareType) && !later.has(s.coshareType)));
-let byType = new Map((await cs.schemas()).map((s) => [s.coshareType, s]));
-const second = [];
-for (const s of wanted.filter((s) => !have.has(s.coshareType) && later.has(s.coshareType))) {
-  const item = structuredClone(s);
-  for (const f of targets.filter((f) => f.type === s.coshareType)) {
-    const ids = f.targets.map((t) => byType.get(t)?.coshareUUID);
-    if (ids.some((x) => !x)) { if (!dry) fail(`targets ${f.type}.${f.attribute}`, `not in CoShare: ${f.targets.filter((t) => !byType.get(t)).join(", ")}`); continue; }
-    Object.assign(item.attributes.find((x) => x.coshareName === f.attribute), { coshareRefSchemaId: ids[0], coshareRefSchemaIds: ids, coshareItemTypes: f.targets });
+const byType = new Map((await cs.schemas()).map((s) => [s.coshareType, s]));
+// Each schema as sent: its UUID, its version, published, and every target of every reference.
+let held = 0;
+for (const s of wanted) {
+  const x = byType.get(s.coshareType);
+  if (!x) { if (!dry) fail(`schema ${s.coshareType}`, "not in CoShare"); continue; }
+  const problems = [];
+  if (x.coshareUUID !== s.coshareUUID) problems.push(`UUID ${x.coshareUUID}, sent ${s.coshareUUID}`);
+  if (x.coshareVersion !== s.coshareVersion) problems.push(`version ${x.coshareVersion}, sent ${s.coshareVersion}`);
+  if (x.coshareState !== "PUBLISHED") problems.push(x.coshareState);
+  const live = new Map(((await cs.call("GET", `/schemas/${x.coshareUUID}/attributes`)).json?.items ?? []).map((a) => [a.coshareName, a]));
+  for (const a of s.attributes.filter((a) => a.coshareType === "REFERENCE")) {
+    const got = live.get(a.coshareName)?.coshareRefSchemaIds ?? [];
+    if (got.length !== a.coshareRefSchemaIds.length || !a.coshareRefSchemaIds.every((id) => got.includes(id))) problems.push(`${a.coshareName} targets ${JSON.stringify(got)}`);
   }
-  second.push(item);
+  if (problems.length) fail(`schema ${s.coshareType}`, problems.join("; ")); else held++;
 }
-await importAndPublish("pass 2", second);
-byType = new Map((await cs.schemas()).map((s) => [s.coshareType, s]));
-// Every target of a multi-target reference, read back.
-let set = 0;
-for (const f of targets.filter((f) => pick(f.type))) {
-  const s = byType.get(f.type); if (!s || dry) continue;
-  const at = ((await cs.call("GET", `/schemas/${s.coshareUUID}/attributes`)).json?.items ?? []).find((x) => x.coshareName === f.attribute);
-  const want = f.targets.map((t) => byType.get(t)?.coshareUUID), got = at?.coshareRefSchemaIds ?? [];
-  if (got.length === want.length && want.every((x) => got.includes(x))) set++; else fail(`targets ${f.type}.${f.attribute}`, `read back ${JSON.stringify(got)}`);
-}
-step("multi-target references", { expected: targets.filter((f) => pick(f.type)).length, set });
-const pending = ((await cs.call("GET", "/schemas/pending-references")).json?.data ?? []).filter((p) => p.schemaType.startsWith("cg_"));
-step("still pending", { count: pending.length, sample: pending.slice(0, 8).map((p) => `${p.schemaType}.${p.attributeName}→${p.coshareRefSchemaId}`) });
+step("schemas read back", { asSent: held, of: wanted.length });
 
 // 3. artifacts
 const selected = artifactsIn.filter((a) => pick(a.coshareType));
 const exists = async (a) => { const s = byType.get(a.coshareType); return s ? (await cs.call("GET", `/schemas/${s.coshareTypeUUID}/artifacts/${a.coshareUUID}`)).status === 200 : false; };
 const present = new Set();
 for (const a of selected) if (await exists(a)) present.add(a.coshareUUID);
-const toImport = selected.filter((a) => !present.has(a.coshareUUID) && byType.get(a.coshareType)?.coshareState === "PUBLISHED");
-step("artifacts", { selected: selected.length, alreadyThere: present.size, toImport: toImport.length, noPublishedSchema: selected.filter((a) => byType.get(a.coshareType)?.coshareState !== "PUBLISHED").length });
-for (let i = 0; i < toImport.length; i += 50) {
-  const chunk = toImport.slice(i, i + 50).map((a) => ({ ...a, coshareSchemaUUID: byType.get(a.coshareType).coshareUUID, attributes: Object.fromEntries(Object.entries(a.attributes).filter(([, v]) => !isLink(v))) }));
+const artifactsToImport = selected.filter((a) => !present.has(a.coshareUUID) && (dry || byType.get(a.coshareType)?.coshareState === "PUBLISHED"));
+step("artifacts", { selected: selected.length, alreadyThere: present.size, toImport: artifactsToImport.length, links: artifactsToImport.reduce((n, a) => n + a.references.length, 0) });
+const t = { succeeded: 0, partial: 0, waiting: 0, dropped: 0 };
+for (let i = 0; i < artifactsToImport.length; i += 50) {
+  const chunk = artifactsToImport.slice(i, i + 50);
   const r = await cs.importBundle("artifacts", "ARTIFACT", chunk);
   if (r.dry) continue;
-  step(`artifacts ${i + 1}–${i + chunk.length}`, { http: r.status, succeeded: r.json?.succeeded, failed: r.json?.failed });
-  for (const it of r.json?.items ?? []) if (it.status !== "SUCCESS") fail(`artifact ${chunk[it.index]?.attributes.address}`, it.error);
+  for (const it of r.json?.items ?? []) {
+    const a = chunk[it.index];
+    if (it.status === "SUCCESS") { t.succeeded++; continue; }
+    if (it.status !== "PARTIAL") { fail(`artifact ${a?.attributes.address}`, it.error ?? JSON.stringify(it)); continue; }
+    t.partial++;
+    // A link that waits for its target is expected here; one that does not wait is lost.
+    for (const f of it.failedReferences ?? []) if (f.waiting) t.waiting++; else { t.dropped++; fail(`link ${a.attributes.address}.${f.attribute} → ${f.refLabel}`, f.reason); }
+  }
 }
-if (!dry) for (const a of toImport) if (await exists(a)) present.add(a.coshareUUID);
-// A link may point at an artifact of a type outside --only that an earlier run loaded.
-const known = new Set(present);
-for (const a of artifactsIn) if (!pick(a.coshareType) && byType.get(a.coshareType) && (await exists(a))) known.add(a.coshareUUID);
-const willExist = (id) => known.has(id) || (dry && artifactsIn.some((x) => x.coshareUUID === id && (pick(x.coshareType) || byType.has(x.coshareType))));
+step("artifacts imported", t);
 
-// 4. links
-const schemaOfType = new Map(schemasIn.map((s) => [s.coshareType, s]));
-const t = { put: 0, linked: 0, waiting: 0, props: 0, missing: 0 };
-for (const a of selected) {
-  if (!present.has(a.coshareUUID) && !dry) continue;
-  const refAttrs = schemaOfType.get(a.coshareType).attributes.filter((x) => x.coshareType === "REFERENCE");
-  if (!refAttrs.some((at) => [].concat(a.attributes[at.coshareName] ?? []).filter(Boolean).length)) continue;
-  const r = await writeArtifact(cs, { typeUuid: byType.get(a.coshareType)?.coshareTypeUUID, artifact: a, refAttrs, exists: willExist });
-  for (const f of r.failures) fail("write", f);
-  for (const m of r.missing) fail("readback", `${m}: link not there after the PUT`);
-  if (!r.failures.some((f) => f.startsWith("PUT"))) t.put++;
-  t.linked += r.linked; t.props += r.props; t.waiting += r.waiting; t.missing += r.missing.length;
+// 4. what still waits once every artifact is in
+if (!dry) {
+  const waiting = ((await cs.call("GET", "/artifacts/unresolved-references")).json?.unresolvedReferences ?? []).filter((u) => u.refSchemaType?.startsWith("cg_"));
+  for (const u of waiting.slice(0, 20)) fail(`link ${u.sourceArtifactId}.${u.attribute} → ${u.refLabel}`, "still waits for its target");
+  step("still waiting", { count: waiting.length });
 }
-step("links", { artifactsPut: t.put, linksSent: t.linked, propertiesPatched: t.props, waitingForTargets: t.waiting, missingOnReadback: t.missing });
 
 log.finishedAt = new Date().toISOString();
 fs.writeFileSync(path.join(dir, dry ? "load-plan.json" : "load-log.json"), JSON.stringify(log, null, 2));

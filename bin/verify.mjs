@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // COSHARE_JWT=… node bin/verify.mjs <bundles dir>
 //
-// Reads the tenant back and compares it with the bundles: each schema's state and version, every
-// artifact and its page, every link with every property, every target of a multi-target reference, and the
-// integrity report. Exits 1 on any difference.
+// Reads the tenant back and compares it with the bundles: each schema's UUID, state and version,
+// every target of every reference, every artifact and its page, every link with every property and
+// no link more, and the integrity report. Exits 1 on any difference.
 import fs from "node:fs";
 import path from "node:path";
 import { client } from "../lib/coshare.mjs";
@@ -12,7 +12,7 @@ const dir = process.argv[2];
 if (!dir) { console.error("usage: COSHARE_JWT=… node bin/verify.mjs <bundles dir>"); process.exit(2); }
 const cs = client();
 const read = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
-const S = read("schemas.bundle.json").items, A = read("artifacts.bundle.json").items, T = read("targets.json");
+const S = read("schemas.bundle.json").items, A = read("artifacts.bundle.json").items;
 const problems = [];
 
 const remote = (await cs.schemas()).filter((s) => s.coshareType.startsWith("cg_"));
@@ -21,11 +21,12 @@ for (const s of S) {
   const r = byType.get(s.coshareType);
   if (!r) problems.push(`schema ${s.coshareType} missing`);
   else if (r.coshareVersion !== s.coshareVersion || r.coshareState !== "PUBLISHED") problems.push(`schema ${s.coshareType}: ${r.coshareState} ${r.coshareVersion}, sent ${s.coshareVersion}`);
+  else if (r.coshareUUID !== s.coshareUUID) problems.push(`schema ${s.coshareType}: UUID ${r.coshareUUID}, sent ${s.coshareUUID}`);
 }
 console.log(`schemas: ${remote.length} in CoShare, ${S.length} sent`);
 
-// Each attribute's classification, privacy and confidentiality, as sent.
-let classified = 0;
+// Each attribute's classification, privacy and confidentiality, as sent, and each reference's targets.
+let classified = 0, targeted = 0, references = 0;
 for (const s of S) {
   const r = byType.get(s.coshareType);
   if (!r) continue;
@@ -35,9 +36,15 @@ for (const s of S) {
     if (!g) { problems.push(`attribute ${s.coshareType}.${a.coshareName} missing`); continue; }
     const differ = ["cosharePrivacy", "coshareConfidentiality"].filter((k) => (a[k] ?? null) !== (g[k] ?? null));
     if (differ.length) problems.push(`attribute ${s.coshareType}.${a.coshareName}: ${differ.map((k) => `${k} ${g[k] ?? "unset"}, sent ${a[k] ?? "unset"}`).join("; ")}`); else classified++;
+    if (a.coshareType !== "REFERENCE") continue;
+    references++;
+    const ids = g.coshareRefSchemaIds ?? [];
+    if (ids.length === a.coshareRefSchemaIds.length && a.coshareRefSchemaIds.every((x) => ids.includes(x)) && !!g.coshareRefRepeatable === !!a.coshareRefRepeatable) targeted++;
+    else problems.push(`reference ${s.coshareType}.${a.coshareName}: targets ${JSON.stringify(ids)}, repeatable ${!!g.coshareRefRepeatable}`);
   }
 }
 console.log(`attributes: ${classified} of ${S.reduce((n, s) => n + s.attributes.length, 0)} classified as sent`);
+console.log(`references: ${targeted} of ${references} with every target as sent`);
 
 const lists = (await cs.graphql("{ coshareSchemas(first: 500) { items { type listField } } }")).data.coshareSchemas.items;
 let artifacts = 0;
@@ -53,30 +60,23 @@ for (const s of S) {
 }
 console.log(`artifacts: ${artifacts} in CoShare, ${A.length} sent`);
 
+// Links: each sent link matched to one the tenant holds with the same target and every property
+// equal, so two rows naming one entity need two links; a link left over is one too many.
+const same = (l, g) => g.refId === l.refId && Object.entries(l.properties ?? {}).every(([k, x]) => String(g.properties?.[k] ?? "") === String(x));
 let links = 0, exact = 0;
 for (const a of A) {
-  const want = Object.entries(a.attributes).filter(([, v]) => v && typeof v === "object" && [].concat(v)[0]?.refId);
   const s = byType.get(a.coshareType);
-  if (!want.length || !s) continue;
-  const got = (await cs.call("GET", `/schemas/${s.coshareTypeUUID}/artifacts/${a.coshareUUID}/references`)).json?._embedded?.references ?? [];
-  for (const [attr, v] of want) for (const l of [].concat(v)) {
+  if (!s) continue;
+  const got = ((await cs.call("GET", `/schemas/${s.coshareTypeUUID}/artifacts/${a.coshareUUID}/references`)).json?._embedded?.references ?? []).flatMap((g) => g.references.map((r) => ({ ...r, attribute: g.attribute })));
+  for (const l of a.references) {
     links++;
-    const g = (got.find((r) => r.attribute === attr)?.references ?? []).find((x) => x.refId === l.refId);
-    if (!g) { problems.push(`link ${a.attributes.address}.${attr} → ${l.refLabel} missing`); continue; }
-    const diff = Object.entries(l.properties ?? {}).filter(([k, x]) => String(g.properties?.[k] ?? "") !== String(x));
-    if (diff.length) problems.push(`link ${a.attributes.address}.${attr} → ${l.refLabel}: ${diff.map(([k]) => k).join(", ")} differ`); else exact++;
+    const i = got.findIndex((g) => g.attribute === l.attribute && same(l, g));
+    if (i >= 0) { got.splice(i, 1); exact++; continue; }
+    problems.push(got.some((g) => g.attribute === l.attribute && g.refId === l.refId) ? `link ${a.attributes.address}.${l.attribute} → ${l.refLabel}: properties differ` : `link ${a.attributes.address}.${l.attribute} → ${l.refLabel} missing`);
   }
+  for (const g of got) problems.push(`link ${a.attributes.address}.${g.attribute} → ${g.refLabel} is not in the bundle`);
 }
 console.log(`links: ${exact} of ${links} present with every property`);
-
-for (const f of T) {
-  const s = byType.get(f.type);
-  if (!s) continue;
-  const at = ((await cs.call("GET", `/schemas/${s.coshareUUID}/attributes`)).json?.items ?? []).find((x) => x.coshareName === f.attribute);
-  const want = f.targets.map((t) => byType.get(t)?.coshareUUID);
-  if (!(at?.coshareRefSchemaIds?.length === want.length && want.every((x) => at.coshareRefSchemaIds.includes(x)))) problems.push(`targets ${f.type}.${f.attribute}: ${JSON.stringify(at?.coshareRefSchemaIds)}`);
-}
-console.log(`multi-target references: ${T.length} checked`);
 
 const ig = (await cs.call("GET", "/schemas/integrity")).json;
 console.log(`integrity: ${ig.schemas} schemas, ${ig.errors} errors, ${ig.warnings} warnings`);

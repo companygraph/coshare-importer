@@ -4,8 +4,9 @@
 // Removes everything the importer put into a tenant: every artifact and schema whose type starts
 // with cg_. Nothing else is touched. Artifacts and drafts are deleted outright. A published schema
 // can only be walked out: deprecate, decommission, archive, purgable and, after CoShare's retention
-// period, purge. Purges run in passes until one makes no progress, because CoShare refuses to purge
-// a schema while another still references it.
+// period, purge. Purges run in passes until one makes no progress, since a purge refused while the
+// retention period runs succeeds on a later pass. A purged schema keeps its UUID in the tenant, so
+// the same schemas cannot be loaded into it again.
 import { client } from "../lib/coshare.mjs";
 
 const cs = client({ dry: process.argv.includes("--dry-run") });

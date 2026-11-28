@@ -28,6 +28,7 @@ before(() => {
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const decisionOf = (r) => r.artifacts.find((a) => a.coshareType === "cg_decision");
+const linksOf = (a, attribute) => a.references.filter((l) => l.attribute === attribute);
 
 test("every type the vocabulary declares becomes a schema at its unit's version", () => {
   const r = convert(root);
@@ -42,8 +43,10 @@ test("every type the vocabulary declares becomes a schema at its unit's version"
     assert.doesNotMatch(s.coshareType, /coshare/i);
     const names = s.attributes.map((a) => a.coshareName);
     assert.equal(new Set(names).size, names.length, `${s.coshareType} names an attribute twice`);
-    assert.ok(s.attributes.every((a) => a.coshareType !== "TEXT"), `${s.coshareType} uses TEXT, which CoShare refuses`);
   }
+  const attrs = r.schemas.find((s) => s.coshareType === "cg_decision").attributes;
+  const type = (n) => attrs.find((a) => a.coshareName === n).coshareType;
+  assert.deepEqual(["markdown", "tagline", "why", "alternatives", "name", "address"].map(type), ["TEXT", "TEXT", "TEXT", "TEXT", "STRING", "STRING"]);
 });
 
 test("an enum field carries its tokens as ALLOWED_VALUES", () => {
@@ -58,39 +61,45 @@ test("a page becomes an artifact with its id, its whole text and its links", () 
   assert.equal(d.attributes.address, "decisions/2026-one-voice");
   assert.match(d.attributes.markdown, /^---\nid: /);
   assert.equal(d.attributes.decided, "2026-11-01");
-  assert.deepEqual({ refId: d.attributes.kind.refId, refLabel: d.attributes.kind.refLabel }, { refId: id(3), refLabel: "Vocabulary" });
+  assert.deepEqual(linksOf(d, "kind"), [{ attribute: "kind", relationshipType: "KIND", refId: id(3), refLabel: "Vocabulary", refSchemaType: "cg_decision_kind", refOriginUUID: id(3) }]);
+  assert.ok(Object.values(d.attributes).every((v) => !v || typeof v !== "object" || Array.isArray(v)), "a link was left among the attributes");
   assert.match(d.attributes.alternatives, /\| Many voices \| A reader cannot tell who speaks \|/);
 });
 
 test("a table link carries its row and the row's other cells", () => {
-  const bears = decisionOf(convert(root)).attributes.bears_on;
-  const writer = bears.find((l) => l.refLabel === "Writer");
+  const writer = linksOf(decisionOf(convert(root)), "bears_on").find((l) => l.refLabel === "Writer");
   assert.deepEqual(writer.properties, { row: "4", type: "seat", owner: "", how: "changed it" });
 });
 
-test("two rows naming one entity become one link that keeps both rows", () => {
+test("two rows naming one entity are two links, each with its own row", () => {
   const r = convert(root);
-  const owner = decisionOf(r).attributes.bears_on.filter((l) => l.refLabel === "Owner");
-  assert.equal(owner.length, 1);
-  assert.deepEqual(owner[0].properties, { row: "1, 3", type: "seat\nseat", owner: "\n", how: "made it\nended it" });
-  assert.equal(r.counts.merged, 1);
+  const owner = linksOf(decisionOf(r), "bears_on").filter((l) => l.refLabel === "Owner");
+  assert.deepEqual(owner.map((l) => l.properties), [{ row: "1", type: "seat", owner: "", how: "made it" }, { row: "3", type: "seat", owner: "", how: "ended it" }]);
+  const bears = r.schemas.find((s) => s.coshareType === "cg_decision").attributes.find((a) => a.coshareName === "bears_on");
+  assert.equal(bears.coshareRefRepeatable, true);
+  assert.equal(r.counts.links, decisionOf(r).references.length + r.artifacts.filter((a) => a !== decisionOf(r)).reduce((n, a) => n + a.references.length, 0));
 });
 
-test("a reference to any type lists the types the model reaches, for the loader to set", () => {
+test("a reference to any type names every type the model reaches, by UUID and by name", () => {
   const r = convert(root);
   const bears = r.schemas.find((s) => s.coshareType === "cg_decision").attributes.find((a) => a.coshareName === "bears_on");
+  const uuidOf = (t) => r.schemas.find((s) => s.coshareType === t).coshareUUID;
   assert.equal(bears.coshareRefSchemaType, "cg_seat"); // the most used first
-  assert.equal(bears.coshareRefSchemaIds.length, 1); // the import resolves only the first
-  assert.deepEqual(r.targets.find((t) => t.type === "cg_decision"), { type: "cg_decision", attribute: "bears_on", targets: ["cg_seat", "cg_decision_kind"] });
+  assert.deepEqual(bears.coshareRefSchemaTypes, ["cg_seat", "cg_decision_kind"]);
+  assert.deepEqual(bears.coshareRefSchemaIds, ["cg_seat", "cg_decision_kind"].map(uuidOf));
+  assert.equal(bears.coshareRefSchemaId, uuidOf("cg_seat"));
 });
 
-test("over CoShare's cap, a reference splits into one attribute per type with one relationship type", () => {
-  const r = convert(root, { maxTargets: 1 });
-  const refs = r.schemas.find((s) => s.coshareType === "cg_decision").attributes.filter((a) => a.coshareName.startsWith("bears_on_") && a.coshareType === "REFERENCE");
-  assert.deepEqual(refs.map((a) => [a.coshareName, a.coshareRefSchemaType, a.coshareRelationshipType]), [["bears_on_seat", "cg_seat", "BEARS_ON"], ["bears_on_decision_kind", "cg_decision_kind", "BEARS_ON"]]);
-  const d = decisionOf(r);
-  assert.deepEqual(d.attributes.bears_on_decision_kind.map((l) => l.refLabel), ["Vocabulary"]);
-  assert.equal(r.targets.find((t) => t.type === "cg_decision"), undefined);
+test("a value longer than CoShare's TEXT limit is named as a loose end", () => {
+  const file = path.join(root, "model", "decisions", "2026-one-voice.md");
+  const committed = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, committed.replace("One reader.", "x".repeat(30001)));
+  try {
+    assert.ok(convert(root).losses.some((l) => /decisions\/2026-one-voice: `why` is 30001 characters/.test(l)));
+    assert.ok(convert(root).losses.some((l) => /decisions\/2026-one-voice: `markdown` is \d+ characters/.test(l)));
+  } finally {
+    fs.writeFileSync(file, committed);
+  }
 });
 
 test("only the named types are converted, and the report counts what was", () => {
