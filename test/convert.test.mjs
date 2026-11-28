@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { convert, report, typeName } from "../lib/convert.mjs";
 
@@ -17,7 +18,7 @@ before(() => {
   const bin = path.join(path.dirname(createRequire(import.meta.url).resolve("@companygraph/meta-model/instance")), "..", "bin", "companygraph.mjs");
   execFileSync("git", ["init", "-q", root]);
   execFileSync(process.execPath, [bin, "init", root, "--here", "--name", "Fixture", "--pack", "organization", "--gate", "none", "--no-hook"], { cwd: root, stdio: "ignore" });
-  page("seats/owner.md", `---\nid: ${id(1)}\nsource: Local\n---\n\n# Owner\n\n> Answers for the company.\n`);
+  page("seats/owner.md", `---\nid: ${id(1)}\nsource: Local\nmood: calm\n---\n\n# Owner\n\n> Answers for the company.\n\n## Notes\n\nA section no schema declares.\n`);
   page("seats/writer.md", `---\nid: ${id(2)}\nsource: Local\n---\n\n# Writer\n\n> Writes the English.\n`);
   page("decision-kinds/vocabulary.md", `---\nid: ${id(3)}\nsource: Local\n---\n\n# Vocabulary\n\n> A call about the words.\n\n## What it means\n\nThe words a model uses.\n`);
   page("decision-statuses/standing.md", `---\nid: ${id(4)}\nsource: Local\n---\n\n# Standing\n\n> The call holds.\n\n## What it means\n\nIt holds.\n`);
@@ -46,7 +47,8 @@ test("every type the vocabulary declares becomes a schema at its unit's version"
   }
   const attrs = r.schemas.find((s) => s.coshareType === "cg_decision").attributes;
   const type = (n) => attrs.find((a) => a.coshareName === n).coshareType;
-  assert.deepEqual(["markdown", "tagline", "why", "alternatives", "name", "address"].map(type), ["TEXT", "TEXT", "TEXT", "TEXT", "STRING", "STRING"]);
+  assert.deepEqual(["unmapped", "tagline", "why", "alternatives", "name", "address", "companygraph_digest"].map(type), ["TEXT", "TEXT", "TEXT", "TEXT", "STRING", "STRING", "STRING"]);
+  assert.ok(r.schemas.every((s) => !s.attributes.some((a) => a.coshareName === "markdown")), "a schema still carries the whole page");
 });
 
 test("an enum field carries its tokens as ALLOWED_VALUES", () => {
@@ -59,7 +61,9 @@ test("a page becomes an artifact with its id, its whole text and its links", () 
   assert.equal(d.coshareUUID, id(5));
   assert.equal(d.attributes.companygraph_id, id(5));
   assert.equal(d.attributes.address, "decisions/2026-one-voice");
-  assert.match(d.attributes.markdown, /^---\nid: /);
+  const file = fs.readFileSync(path.join(root, "model", "decisions", "2026-one-voice.md"), "utf8");
+  assert.equal(d.attributes.companygraph_digest, crypto.createHash("sha256").update(file).digest("hex"));
+  assert.equal(d.attributes.unmapped, undefined, "a page the schema holds whole has nothing unmapped");
   assert.equal(d.attributes.decided, "2026-11-01");
   assert.deepEqual(linksOf(d, "kind"), [{ attribute: "kind", relationshipType: "KIND", refId: id(3), refLabel: "Vocabulary", refSchemaType: "cg_decision_kind", refOriginUUID: id(3) }]);
   assert.ok(Object.values(d.attributes).every((v) => !v || typeof v !== "object" || Array.isArray(v)), "a link was left among the attributes");
@@ -96,7 +100,6 @@ test("a value longer than CoShare's TEXT limit is named as a loose end", () => {
   fs.writeFileSync(file, committed.replace("One reader.", "x".repeat(30001)));
   try {
     assert.ok(convert(root).losses.some((l) => /decisions\/2026-one-voice: `why` is 30001 characters/.test(l)));
-    assert.ok(convert(root).losses.some((l) => /decisions\/2026-one-voice: `markdown` is \d+ characters/.test(l)));
   } finally {
     fs.writeFileSync(file, committed);
   }
@@ -132,11 +135,19 @@ test("--commit reads the instance as it was committed, not its working copy", ()
   fs.writeFileSync(file, committed.replace("One reader.", "One reader, edited."));
   try {
     const now = decisionOf(convert(root)), then = convert(root, { commit: "HEAD" });
-    assert.match(now.attributes.markdown, /One reader, edited\./);
-    assert.equal(decisionOf(then).attributes.markdown, committed);
+    assert.match(now.attributes.why, /One reader, edited\./);
+    assert.equal(decisionOf(then).attributes.why, "One reader.");
     assert.equal(then.commit, execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim());
     assert.throws(() => convert(root, { commit: "no-such-ref" }), /has no commit no-such-ref/);
   } finally {
     fs.writeFileSync(file, committed);
   }
+});
+
+test("what no attribute holds is kept in unmapped and named as a loose end", () => {
+  const r = convert(root);
+  const owner = r.artifacts.find((a) => a.attributes.address === "seats/owner");
+  assert.equal(owner.attributes.unmapped, "## Notes\n\nA section no schema declares.\n\n- `mood`: calm");
+  assert.ok(r.losses.some((l) => /seats\/owner: section "## Notes" is not in the seat schema; kept in `unmapped`/.test(l)));
+  assert.ok(r.losses.some((l) => /seats\/owner: `mood` is not a field of the seat schema; kept in `unmapped`/.test(l)));
 });

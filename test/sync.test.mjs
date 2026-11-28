@@ -3,10 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planArtifacts, schemaDifferences, attributePlan, bumpOf, versionHolds, withTargets } from "../lib/sync.mjs";
 
-const art = (id, markdown) => ({ coshareUUID: id, coshareType: "cg_seat", attributes: { address: `seats/${id}`, markdown } });
+const art = (id, digest) => ({ coshareUUID: id, coshareType: "cg_seat", attributes: { address: `seats/${id}`, companygraph_digest: digest } });
 
 test("a sync imports what is new, writes what changed, deletes what is gone and leaves the rest", () => {
-  const live = new Map([["a", { type: "cg_seat", markdown: "same" }], ["b", { type: "cg_seat", markdown: "old" }], ["c", { type: "cg_seat", markdown: "gone" }]]);
+  const live = new Map([["a", { type: "cg_seat", digest: "same" }], ["b", { type: "cg_seat", digest: "old" }], ["c", { type: "cg_seat", digest: "gone" }]]);
   const p = planArtifacts([art("a", "same"), art("b", "new"), art("d", "added")], live);
   assert.deepEqual(p.added.map((a) => a.coshareUUID), ["d"]);
   assert.deepEqual(p.changed.map((a) => a.coshareUUID), ["b"]);
@@ -40,8 +40,8 @@ test("a table reference that stops or starts taking one link per row is a differ
   assert.deepEqual(schemaDifferences(schema, liveOf({ ref: { coshareRefRepeatable: false } }), typesOf), []);
 });
 
-test("a page of a type that took a new version is written again, whatever its markdown", () => {
-  const live = new Map([["a", { type: "cg_seat", markdown: "same" }], ["b", { type: "cg_role", markdown: "same" }]]);
+test("a page of a type that took a new version is written again, whatever its digest", () => {
+  const live = new Map([["a", { type: "cg_seat", digest: "same" }], ["b", { type: "cg_role", digest: "same" }]]);
   const p = planArtifacts([art("a", "same"), { ...art("b", "same"), coshareType: "cg_role" }], live, { rewrite: new Set(["cg_seat"]) });
   assert.deepEqual(p.changed.map((a) => a.coshareUUID), ["a"]);
   assert.deepEqual(p.unchanged.map((a) => a.coshareUUID), ["b"]);

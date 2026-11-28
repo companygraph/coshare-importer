@@ -4,11 +4,11 @@
 // Brings a tenant that already holds the instance to the instance at a commit, its working copy
 // by default, and writes only what differs:
 // - a page the tenant does not hold is imported, with its links;
-// - a page whose markdown differs from the tenant's is written again with a PUT, its values and
+// - a page whose digest differs from the tenant's is written again with a PUT, its values and
 //   its whole link set, so a link the page no longer names is removed; the links other artifacts
 //   have to it stay;
 // - an artifact whose page is gone is deleted.
-// A page whose markdown the tenant already holds is left alone, and so is the commit it was last
+// A page whose digest the tenant already holds is left alone, and so is the commit it was last
 // written at. Before the pages, the schemas: a type the tenant lacks is imported and published; a
 // type whose schema changed takes a new version, since a published schema cannot change in place.
 // The version is bumped by the segment the unit's version moved, or by a patch where only the
@@ -128,9 +128,14 @@ if (versioned.length || added.length) {
   step("versions", { ...versions, now: versioned.map((v) => `${v.s.coshareType} ${byType.get(v.s.coshareType)?.coshareVersion}`).slice(0, 10) });
 }
 
-// The artifacts the tenant holds, with their markdown.
+// The artifacts the tenant holds, with their digests. A type that does not have the digest yet has
+// just taken a new version, or is about to in a dry run, and every page of it is written again.
 const live = new Map();
-for (const type of byType.keys()) for (const a of await idsOf(type, "coshareUUID markdown")) live.set(a.coshareUUID, { type, markdown: a.markdown });
+for (const type of byType.keys()) {
+  const withDigest = await idsOf(type, "coshareUUID companygraph_digest");
+  const held = withDigest.length ? withDigest : await idsOf(type);
+  for (const a of held) live.set(a.coshareUUID, { type, digest: a.companygraph_digest ?? null });
+}
 const plan = planArtifacts(r.artifacts, live, { rewrite: new Set(versioned.map((v) => v.s.coshareType)) });
 step("plan", { added: plan.added.length, changed: plan.changed.length, removed: plan.removed.length, unchanged: plan.unchanged.length, pages: [...plan.added, ...plan.changed].map((a) => a.attributes.address).slice(0, 20) });
 
