@@ -2,6 +2,8 @@
 
 CoShare took all seven changes the [findings report of 2026-11-26](2026-11-26-findings-report.md) asked for, and most of its smaller findings, within two days. The importer has dropped every workaround they made necessary, and mental-model is back in the tenant at commit `07822bf`: 54 schemas at core version v0.71.0, 460 artifacts and 1,986 links, read back with no differences. The 31 table rows that had been merged into 17 links are separate links again, which is why there are 31 more links than on 2026-11-26.
 
+One thing CoShare has no place for at all: the guidance each of our schemas gives whoever writes a record, a person or an AI agent. The [last section](#guidance-for-whoever-writes-a-record) proposes a change for it, and it matters more to us than any finding here.
+
 ## What changed in the load
 
 The load is now two imports and the publishing between them. The schemas go in one bundle in any order, each under its vocabulary id, and every reference names all its targets by UUID and by type name. The artifacts go in bundles of 50 with their links and the links' properties; a link to an artifact not yet loaded waits for it, and 820 links did so and were made as their targets arrived. The 458 `PUT`s and 574 `PATCH`es after the imports, the second pass over the schemas and the re-pointing of artifacts at reassigned UUIDs are gone. The load took under two minutes.
@@ -69,7 +71,22 @@ Publishing a version leaves a type's references to itself on the previous versio
 
 With purging understood, the tenant was emptied and loaded again from mental-model at `07822bf`: `bin/reset.mjs` deleted the 460 artifacts and purged all 162 versions of the 54 types, leaving no `cg_` schema listed, and `bin/load.mjs` imported the 54 schemas under their vocabulary ids at v0.71.0, groups included, and the 460 artifacts, whose 820 links to artifacts not yet loaded waited and were made. Each type now has one version, at the core version it describes. `bin/verify.mjs` reports no differences, a sync finds nothing to do, and CoShare's health counts no error and five warnings: the three pending references of its own `system_cosharePerson` and the typo heuristic on `STATUS` and `HOLDS`, once each.
 
+## Guidance for whoever writes a record
+
+Each of our schemas carries two sections of guidance besides the structure it declares: `## Purpose`, what the type is for and what question one of its records answers, and `## Writing rules`, how to write one well. [`concept-schema.md`](https://github.com/companygraph/mental-model/blob/main/meta/core/concept-schema.md) is an example. In CompanyGraph they are what an agent reads before it writes a page, and they are much of why its pages come out right. All 54 schemas have both; Purpose runs to about 2,000 characters, Writing rules to about 4,500.
+
+CoShare has no place for them. The schema description takes at most 4,000 characters, and the user interface shows it in one place only, under the schema's name in Data, Records, as one paragraph of small print with its line breaks lost; the Schema Manager and the graphical editor, where a schema is built, do not show it. We load Purpose there today, with the tagline and the commit it came from, and Writing rules not at all: putting them in the description would mix them with what describes the schema, cut the longest at 4,000 characters, and leave them where no one writing a record looks. CoShare's Foundation Semantic Schema Profile has the slots for them, `semantic` and `ai`, empty in every export, with `ai.enrichmentStatus` at `not_started`.
+
+| What we propose | Why |
+| --- | --- |
+| Two fields on a schema, purpose and writing rules, in Markdown and as long as TEXT allows | They are not a description of the schema but guidance for whoever writes against it, and they run longer than 4,000 characters |
+| Shown, rendered, where a record is written and read, and where a schema is edited | A person writing a record sees them when they need them |
+| Carried in the bundle export and import | A loader like ours sets them the way it sets everything else |
+| Placed in the Foundation Semantic Schema Profile's `semantic` and `ai` sections | An AI agent receives them with the schema it writes against, as guidance rather than as part of a description |
+
+One more finding, from the same look at the user interface: versions show with the `v` doubled, `vv0.71.0`, and CoShare's own `system_cosharePerson` shows as `vv1.3.2`, so the `v` is added to a version that carries one already.
+
 ## Open
 
-- [ ] Ask CoShare about the fourteen findings above.
+- [ ] Propose the schema guidance fields to CoShare, and ask about the fifteen findings above.
 - [ ] Load a second instance, to see what generalizes beyond mental-model; a tenant holds one instance, since the `cg_` prefix names the meta-model.
