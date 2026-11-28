@@ -51,8 +51,21 @@ Five more behaviors came to light on the way, the first of them at a cost: archi
 | An import of a whole schema under the name of a type that exists makes a second type of the same name, beside the first | Refuse it, or make it a version of the type |
 | The integrity report checks deprecated and archived versions as well: 14 references from a type to itself stay pinned to the old version, and the typo heuristic fires once per version. After a purge and a new import of the same type name, it names two versions as the working version | Check the published version only, and move a type's references to itself with the rest |
 
+## Grouped attributes
+
+Groups work one level deep. A group keeps its display name, description and order, a grouped value imports, reads back over REST and GraphQL and is written by a `PUT` nested under its group, and a grouped reference links, with its properties and one link per row, through the bundle's `references` and through a nested `PUT`; on 2026-11-26 the import dropped the values, the names and the order, and a nested reference made no link. The importer now groups as the page is: the frontmatter at the top beside the name and tagline, one group per section in the page's order, holding the section's text and the links its table draws, and a last group, `companygraph`, for the id, the address, the digest, what no attribute holds and the commit. All 54 types took it as v0.71.2 through `bin/sync.mjs`, 209 groups in all, and `bin/verify.mjs` reads back every attribute in its group and every value through its group with no differences.
+
+Publishing a version leaves a type's references to itself on the previous version. CoShare's integrity check names each and its fix, and `bin/sync.mjs` now applies those fixes after it publishes: 42 on this change, none left. CoShare's data-quality page shows nothing else of ours; what it lists are `system_cosharePerson`'s three pending references, the typo heuristic, which now counts each of `STATUS` and `HOLDS` on three versions, and leftovers of the throwaway schemas these probes used: three types with two working versions after a purge and an import of the same name, and 32 of the 47 attributes it counts as unclassified, the other 15 being on CoShare's own `system_File` and `system_cosharePerson`.
+
+| What we saw | What we ask |
+| --- | --- |
+| A group within a group fails the schema import with "the schema was not created", yet a draft is left behind without a state machine, so that no transition removes it; only a `DELETE` of the schema, after its artifacts, does | Import nested groups, or refuse them leaving nothing behind |
+| A value sent at the top for a grouped attribute is dropped on import, which answers `SUCCESS`; a `PUT` refuses the same value and says to nest it | Refuse it on import as the `PUT` does |
+| A grouped reference named as `group.attribute` in `references` is refused as `RELATIONSHIP_TYPE_REQUIRED`, which does not name the cause | Take the group path, or name the cause |
+| `GET /schemas/{uuid}/attributes` lists only the ungrouped attributes | List every attribute, with the group it is in |
+| Purged throwaway schemas keep three types with two working versions and 32 unclassified attributes on the data-quality page, with no fix offered | Leave purged schemas out of the checks, or offer to clear them |
+
 ## Open
 
-- [ ] Ask CoShare about the nine findings above.
-- [ ] Try grouped attributes again.
-- [ ] Load a second instance, to see what generalizes beyond mental-model.
+- [ ] Ask CoShare about the fourteen findings above.
+- [ ] Load a second instance, to see what generalizes beyond mental-model; a tenant holds one instance, since the `cg_` prefix names the meta-model.
