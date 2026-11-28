@@ -27,11 +27,11 @@ Four behaviors came to light while the importer was reworked; each is recorded i
 | An `OVERWRITE` import of an artifact that other artifacts link to answers `SUCCESS` and writes nothing; an artifact nothing links to is overwritten | Overwrite it, or refuse it with a reason |
 | A link sent without `refOriginUUID` to an artifact not yet loaded is lost with `waiting: false`, and `POST /artifacts/resolve-references` does not bring it back | Let such a link wait by `refId`, or say in the answer that it is lost for good |
 | `GET /schemas` lists purged schemas beside the current schema of the same type | Leave purged schemas out unless asked for |
-| A purged schema keeps its UUID, and an import under it is refused as a conflict, so a test tenant cannot take an instance's schemas again after a reset | Free the UUID on purge, or offer a purge that does |
+| A purged schema keeps its UUID, and an import under it is refused as a conflict, until a second `purge` removes it; nothing says so, and the transition stays offered on a purged schema | Remove a schema with its first purge, or say that a second one is needed |
 
 A link's label also keeps the target's old name after the target is renamed, which matters only to a reader who sees the label without following the link.
 
-The last finding matters only to a clean reload. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for, and the importer now does that; the next section says how it went.
+The last finding matters only to a clean reload, and a second purge, found later the same day, takes it away. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for, and the importer now does that; the next section says how it went.
 
 `bin/sync.mjs` writes a changed page with a `PUT` that carries the page's values and its whole link set with every link's properties, because of the first finding; it was tried by syncing the tenant back to `c439b16` and forward to `07822bf` again, five pages each way, with `bin/verify.mjs` clean after each.
 
@@ -55,7 +55,7 @@ Five more behaviors came to light on the way, the first of them at a cost: archi
 
 Groups work one level deep. A group keeps its display name, description and order, a grouped value imports, reads back over REST and GraphQL and is written by a `PUT` nested under its group, and a grouped reference links, with its properties and one link per row, through the bundle's `references` and through a nested `PUT`; on 2026-11-26 the import dropped the values, the names and the order, and a nested reference made no link. The importer now groups as the page is: the frontmatter at the top beside the name and tagline, one group per section in the page's order, holding the section's text and the links its table draws, and a last group, `companygraph`, for the id, the address, the digest, what no attribute holds and the commit. All 54 types took it as v0.71.2 through `bin/sync.mjs`, 209 groups in all, and `bin/verify.mjs` reads back every attribute in its group and every value through its group with no differences.
 
-Publishing a version leaves a type's references to itself on the previous version. CoShare's integrity check names each and its fix, and `bin/sync.mjs` now applies those fixes after it publishes: 42 on this change, none left. CoShare's data-quality page shows nothing else of ours; what it lists are `system_cosharePerson`'s three pending references, the typo heuristic, which now counts each of `STATUS` and `HOLDS` on three versions, and leftovers of the throwaway schemas these probes used: three types with two working versions after a purge and an import of the same name, and 32 of the 47 attributes it counts as unclassified, the other 15 being on CoShare's own `system_File` and `system_cosharePerson`.
+Publishing a version leaves a type's references to itself on the previous version. CoShare's integrity check names each and its fix, and `bin/sync.mjs` now applies those fixes after it publishes: 42 on this change, none left. CoShare's data-quality page shows nothing else of ours; what it lists are `system_cosharePerson`'s three pending references, the typo heuristic, which now counts each of `STATUS` and `HOLDS` on three versions, and leftovers of the throwaway schemas these probes used: three types with two working versions after a purge and an import of the same name, and 32 of the 47 attributes it counted as unclassified. A second purge of each throwaway schema removed them, and the page now shows nine warnings and no error: the three pending references, the six typo warnings, and 15 unclassified attributes, all on CoShare's own `system_File` and `system_cosharePerson`.
 
 | What we saw | What we ask |
 | --- | --- |
@@ -63,7 +63,7 @@ Publishing a version leaves a type's references to itself on the previous versio
 | A value sent at the top for a grouped attribute is dropped on import, which answers `SUCCESS`; a `PUT` refuses the same value and says to nest it | Refuse it on import as the `PUT` does |
 | A grouped reference named as `group.attribute` in `references` is refused as `RELATIONSHIP_TYPE_REQUIRED`, which does not name the cause | Take the group path, or name the cause |
 | `GET /schemas/{uuid}/attributes` lists only the ungrouped attributes | List every attribute, with the group it is in |
-| Purged throwaway schemas keep three types with two working versions and 32 unclassified attributes on the data-quality page, with no fix offered | Leave purged schemas out of the checks, or offer to clear them |
+| Purged throwaway schemas kept three types with two working versions and 32 unclassified attributes on the data-quality page, with no fix offered there; a second purge of each removed them | Leave purged schemas out of the checks, or point to the second purge |
 
 ## Open
 

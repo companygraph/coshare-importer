@@ -27,7 +27,7 @@ node bin/verify.mjs ~/git/companygraph/mental-model/dist/coshare
 node bin/sync.mjs ~/git/companygraph/mental-model --confidentiality 0 --dry-run
 ```
 
-`convert` writes into `dist/coshare/` inside the instance unless `--out` names another folder, `--only` takes a comma-separated list of types for a trial, and `--confidentiality` takes 0 for public, 1 internal, 2 confidential or 3 strictly confidential; without it, CoShare shows confidentiality as not decided. `load` and `reset` take `--dry-run`, which reads the tenant and writes nothing. `--commit` reads the instance at a commit, tag or branch of its repository instead of its working copy, which it does not touch. A later commit reaches a tenant that holds the instance with `sync`, which takes `--commit`, `--confidentiality`, `--out` and `--dry-run` as well; a clean reload, `reset` then `load`, needs a tenant that has not held those schemas before, since CoShare keeps a purged schema's UUID.
+`convert` writes into `dist/coshare/` inside the instance unless `--out` names another folder, `--only` takes a comma-separated list of types for a trial, and `--confidentiality` takes 0 for public, 1 internal, 2 confidential or 3 strictly confidential; without it, CoShare shows confidentiality as not decided. `load` and `reset` take `--dry-run`, which reads the tenant and writes nothing. `--commit` reads the instance at a commit, tag or branch of its repository instead of its working copy, which it does not touch. A later commit reaches a tenant that holds the instance with `sync`, which takes `--commit`, `--confidentiality`, `--out` and `--dry-run` as well; a clean reload is `reset` then `load`.
 
 ## Tests
 
