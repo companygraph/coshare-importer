@@ -23,7 +23,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { convert, report } from "../lib/convert.mjs";
 import { client } from "../lib/coshare.mjs";
-import { planArtifacts, attributePlan, schemaDifferences, bumpOf, withTargets } from "../lib/sync.mjs";
+import { planArtifacts, attributePlan, groupPlan, schemaDifferences, bumpOf, withTargets, addressOf } from "../lib/sync.mjs";
+import { flatAttributes } from "../lib/convert.mjs";
 import { writeArtifact } from "../lib/write.mjs";
 
 const args = process.argv.slice(2);
@@ -66,9 +67,11 @@ const versioned = [];
 for (const s of r.schemas) {
   const live = byType.get(s.coshareType);
   if (!live) continue;
-  const attrs = (await cs.call("GET", `/schemas/${live.coshareUUID}/attributes`)).json?.items ?? [];
+  const attrs = await cs.attributes(live.coshareUUID);
   const plan = attributePlan(s, attrs, typesOf);
-  if (plan.added.length || plan.removed.length || plan.changed.length) versioned.push({ s, live, plan, differences: schemaDifferences(s, attrs, typesOf) });
+  const groups = groupPlan(s, await cs.groups(live.coshareUUID));
+  const differences = [...schemaDifferences(s, attrs, typesOf), ...groups.added.map((n) => `${s.coshareType} group ${n} is new`), ...groups.removed.map((n) => `${s.coshareType} group ${n} is gone`), ...groups.changed.map((c) => `${s.coshareType} group ${c.name}: ${c.what.join(", ")} differ`)];
+  if (differences.length) versioned.push({ s, live, plan, differences });
 }
 step("schemas", { compared: r.schemas.length, new: added.map((s) => s.coshareType), newVersion: versioned.map((v) => `${v.s.coshareType} ${v.live.coshareVersion} +${bumpOf(v.live.coshareVersion, v.s.coshareVersion)}`), blocked });
 for (const v of versioned.slice(0, 5)) for (const d of v.differences.slice(0, 8)) console.log(`  ${d}`);
@@ -83,7 +86,7 @@ const forTenant = (a) => withTargets(a, uuidOfType);
 
 // New types: imported and published, as a load does.
 if (added.length) {
-  const res = await cs.importBundle("schemas", "SCHEMA", added.map((s) => ({ ...s, attributes: s.attributes.map(forTenant) })));
+  const res = await cs.importBundle("schemas", "SCHEMA", added.map((s) => ({ ...s, attributes: s.attributes.map(forTenant), groups: (s.groups ?? []).map((g) => ({ ...g, attributes: g.attributes.map(forTenant) })) })));
   if (!res.dry) {
     for (const it of res.json?.items ?? []) if (it.status !== "SUCCESS") fail(`schema ${added[it.index]?.coshareType}`, it.error ?? JSON.stringify(it));
     for (const s of added) for (const t of ["submit-review", "publish"]) { const y = await cs.transition(s.coshareUUID, t); if (!y.ok) { fail(`${t} ${s.coshareType}`, y.text); break; } }
@@ -98,15 +101,28 @@ for (const { s, live, plan } of versioned) {
   if (made.dry) continue;
   if (!made.ok) { fail(`new version of ${s.coshareType}`, made.text); continue; }
   const draft = made.json.coshareUUID;
-  const draftAttrs = new Map(((await cs.call("GET", `/schemas/${draft}/attributes`)).json?.items ?? []).map((a) => [a.coshareName, a]));
-  const sent = new Map(s.attributes.map((a) => [a.coshareName, forTenant(a)]));
-  const edits = [
-    ...plan.removed.map((n) => ["DELETE", `/schemas/${draft}/attributes/${draftAttrs.get(n).coshareUUID}?keepVersion=true`, undefined, `remove ${n}`]),
-    ...plan.added.map((n) => ["POST", `/schemas/${draft}/attributes?keepVersion=true`, sent.get(n), `add ${n}`]),
-    ...plan.changed.map((c) => ["PUT", `/schemas/${draft}/attributes/${draftAttrs.get(c.name).coshareUUID}?keepVersion=true`, { ...draftAttrs.get(c.name), ...sent.get(c.name) }, `change ${c.name}`]),
-  ];
+  const k = "?keepVersion=true";
   let ok = true;
-  for (const [method, url, body, what] of edits) { const e = await cs.call(method, url, body); if (!e.ok) { ok = false; fail(`${s.coshareType} ${made.json.coshareVersion}: ${what}`, e.text); } }
+  const edit = async (method, url, body, what) => { const e = await cs.call(method, url, body); if (!e.ok) { ok = false; fail(`${s.coshareType} ${made.json.coshareVersion}: ${what}`, e.text); } return e; };
+  // The draft's groups first, as the bundle has them; an attribute goes where the bundle puts it.
+  const gp = groupPlan(s, await cs.groups(draft));
+  const sentGroup = new Map((s.groups ?? []).map((g) => [g.coshareName, g]));
+  const groupBody = (g) => ({ coshareName: g.coshareName, coshareDisplayName: g.coshareDisplayName, coshareDescription: g.coshareDescription, coshareOrder: g.coshareOrder });
+  for (const n of gp.added) await edit("POST", `/schemas/${draft}/groups${k}`, groupBody(sentGroup.get(n)), `add group ${n}`);
+  const draftGroups = new Map((await cs.groups(draft)).map((g) => [g.coshareName, g]));
+  for (const c of gp.changed) await edit("PATCH", `/schemas/${draft}/groups/${draftGroups.get(c.name).coshareUUID}${k}`, groupBody(sentGroup.get(c.name)), `change group ${c.name}`);
+  // An attribute that changed, its group included, is removed and made again where it belongs:
+  // the migration carries no value across, and every page of the type is written again after it.
+  const draftAttrs = new Map((await cs.attributes(draft)).map((a) => [a.coshareName, a]));
+  const sent = new Map(flatAttributes(s).map((a) => [a.coshareName, a]));
+  const body = (n) => { const { group, ...a } = forTenant(sent.get(n)); return a; };
+  const where = (a) => (a.group ? `/schemas/${draft}/groups/${a.groupUUID}/attributes/${a.coshareUUID}` : `/schemas/${draft}/attributes/${a.coshareUUID}`);
+  for (const n of [...plan.removed, ...plan.changed.map((c) => c.name)]) await edit("DELETE", `${where(draftAttrs.get(n))}${k}`, undefined, `remove ${n}`);
+  for (const n of [...plan.added, ...plan.changed.map((c) => c.name)]) {
+    const g = sent.get(n).group;
+    await edit("POST", g ? `/schemas/${draft}/groups/${draftGroups.get(g).coshareUUID}/attributes${k}` : `/schemas/${draft}/attributes${k}`, body(n), `add ${n}${g ? ` in ${g}` : ""}`);
+  }
+  for (const n of gp.removed) await edit("DELETE", `/schemas/${draft}/groups/${draftGroups.get(n).coshareUUID}${k}`, undefined, `remove group ${n}`);
   // The description names the unit's version and the commit; a draft takes it with its version kept.
   const d = (await cs.call("GET", `/schemas/${draft}`)).json;
   if (d) { const e = await cs.call("PUT", `/schemas/${draft}?keepVersion=true`, { ...Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith("_"))), coshareDescription: s.coshareDescription }); if (!e.ok) fail(`${s.coshareType}: description`, e.text); }
@@ -126,18 +142,29 @@ if (versioned.length || added.length) {
   all = (await cs.schemas()).filter((s) => s.coshareType.startsWith("cg_"));
   byType = new Map(all.filter((s) => s.coshareState === "PUBLISHED").map((s) => [s.coshareType, s]));
   step("versions", { ...versions, now: versioned.map((v) => `${v.s.coshareType} ${byType.get(v.s.coshareType)?.coshareVersion}`).slice(0, 10) });
+  // A type's references to itself stay on its previous version when a new one is published;
+  // CoShare's integrity check knows the fix, and only those are applied.
+  const stale = ((await cs.call("GET", "/schemas/integrity")).json?.issues ?? []).filter((i) => i.code === "STALE_TARGET_VERSION" && bundleOf.has(i.schemaType) && i.fix?.action === "REPOINT");
+  if (stale.length) {
+    const fixed = await cs.write("POST", "/schemas/integrity/repair", { dryRun: false, issueIds: stale.map((i) => i.id) });
+    const left = (fixed.json?.outcomes ?? []).filter((o) => o.status !== "FIXED");
+    for (const o of left) fail(`repoint ${o.issueId}`, o.message);
+    step("references to an old version", { repointed: stale.length - left.length, of: stale.length });
+  }
 }
 
 // The artifacts the tenant holds, with their digests. A type that does not have the digest yet has
 // just taken a new version, or is about to in a dry run, and every page of it is written again.
 const live = new Map();
 for (const type of byType.keys()) {
-  const withDigest = await idsOf(type, "coshareUUID companygraph_digest");
-  const held = withDigest.length ? withDigest : await idsOf(type);
-  for (const a of held) live.set(a.coshareUUID, { type, digest: a.companygraph_digest ?? null });
+  // The digest sits in the bookkeeping group, or at the top on a type loaded before groups.
+  const grouped = await idsOf(type, "coshareUUID companygraph { companygraph_digest }");
+  const flat = grouped.length ? [] : await idsOf(type, "coshareUUID companygraph_digest");
+  const held = grouped.length ? grouped : flat.length ? flat : await idsOf(type);
+  for (const a of held) live.set(a.coshareUUID, { type, digest: a.companygraph?.companygraph_digest ?? a.companygraph_digest ?? null });
 }
 const plan = planArtifacts(r.artifacts, live, { rewrite: new Set(versioned.map((v) => v.s.coshareType)) });
-step("plan", { added: plan.added.length, changed: plan.changed.length, removed: plan.removed.length, unchanged: plan.unchanged.length, pages: [...plan.added, ...plan.changed].map((a) => a.attributes.address).slice(0, 20) });
+step("plan", { added: plan.added.length, changed: plan.changed.length, removed: plan.removed.length, unchanged: plan.unchanged.length, pages: [...plan.added, ...plan.changed].map((a) => addressOf(a)).slice(0, 20) });
 
 // Added pages in one import, a link to a page later in the import waiting for it; then each changed
 // page written over its artifact.
@@ -149,16 +176,16 @@ for (let i = 0; i < plan.added.length; i += 50) {
   for (const it of res.json?.items ?? []) {
     const a = chunk[it.index];
     if (it.status === "SUCCESS") { t.imported++; continue; }
-    if (it.status !== "PARTIAL") { fail(`import ${a?.attributes.address}`, it.error ?? JSON.stringify(it)); continue; }
+    if (it.status !== "PARTIAL") { fail(`import ${addressOf(a)}`, it.error ?? JSON.stringify(it)); continue; }
     t.imported++; t.partial++;
-    for (const f of it.failedReferences ?? []) if (f.waiting) t.waiting++; else { t.dropped++; fail(`link ${a.attributes.address}.${f.attribute} → ${f.refLabel}`, f.reason); }
+    for (const f of it.failedReferences ?? []) if (f.waiting) t.waiting++; else { t.dropped++; fail(`link ${addressOf(a)}.${f.attribute} → ${f.refLabel}`, f.reason); }
   }
 }
 const schemaOfType = new Map(r.schemas.map((s) => [s.coshareType, s]));
 for (const a of plan.changed) {
-  const refAttrs = schemaOfType.get(a.coshareType).attributes.filter((x) => x.coshareType === "REFERENCE");
+  const refAttrs = flatAttributes(schemaOfType.get(a.coshareType)).filter((x) => x.coshareType === "REFERENCE");
   const res = await writeArtifact(cs, { typeUuid: byType.get(a.coshareType).coshareTypeUUID, artifact: a, refAttrs });
-  if (res.ok) t.written++; else fail(`write ${a.attributes.address}`, res.text);
+  if (res.ok) t.written++; else fail(`write ${addressOf(a)}`, res.text);
 }
 for (const a of plan.removed) {
   const res = await cs.write("DELETE", `/schemas/${byType.get(a.coshareType).coshareTypeUUID}/artifacts/${a.coshareUUID}?force=true`);

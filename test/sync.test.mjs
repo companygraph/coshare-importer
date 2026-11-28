@@ -1,9 +1,9 @@
 // The sync's plan and its schema comparison, without a tenant.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planArtifacts, schemaDifferences, attributePlan, bumpOf, versionHolds, withTargets } from "../lib/sync.mjs";
+import { planArtifacts, schemaDifferences, attributePlan, groupPlan, bumpOf, versionHolds, withTargets } from "../lib/sync.mjs";
 
-const art = (id, digest) => ({ coshareUUID: id, coshareType: "cg_seat", attributes: { address: `seats/${id}`, companygraph_digest: digest } });
+const art = (id, digest) => ({ coshareUUID: id, coshareType: "cg_seat", attributes: { companygraph: { address: `seats/${id}`, companygraph_digest: digest } } });
 
 test("a sync imports what is new, writes what changed, deletes what is gone and leaves the rest", () => {
   const live = new Map([["a", { type: "cg_seat", digest: "same" }], ["b", { type: "cg_seat", digest: "old" }], ["c", { type: "cg_seat", digest: "gone" }]]);
@@ -16,8 +16,8 @@ test("a sync imports what is new, writes what changed, deletes what is gone and 
 
 const ref = { coshareName: "by", coshareType: "REFERENCE", coshareCardinality: "ONE", coshareRequired: true, cosharePrivacy: 0, coshareRefSchemaType: "cg_seat", coshareRelationshipProperties: [{ coshareName: "row" }] };
 const text = { coshareName: "kind", coshareType: "STRING", coshareCardinality: "ONE", coshareRequired: false, cosharePrivacy: 0, coshareValidators: [{ coshareType: "ALLOWED_VALUES", value: ["a", "b"] }] };
-const schema = { coshareType: "cg_decision", attributes: [ref, text] };
-const liveOf = (over = {}) => [{ ...ref, coshareCardinality: "one", coshareRefSchemaIds: ["seat-uuid"], ...over.ref }, { ...text, ...over.text }];
+const schema = { coshareType: "cg_decision", attributes: [ref, text], groups: [] };
+const liveOf = (over = {}) => [{ ...ref, coshareCardinality: "one", coshareRefSchemaIds: ["seat-uuid"], group: null, ...over.ref }, { ...text, group: null, ...over.text }];
 const typeOfId = new Map([["seat-uuid", "cg_seat"], ["seat-uuid-2", "cg_seat"], ["other-uuid", "cg_other"]]);
 const typesOf = (a) => (a.coshareRefSchemaIds ?? []).map((x) => typeOfId.get(x));
 ref.coshareRefSchemaTypes = ["cg_seat"];
@@ -52,7 +52,7 @@ test("a reference's targets are compared by type, so a target's new version is n
 });
 
 test("the attribute plan names what a new version adds, removes and changes", () => {
-  const live = [{ ...liveOf()[0] }, { ...text, coshareName: "markdown" }];
+  const live = [{ ...liveOf()[0] }, { ...text, coshareName: "markdown", group: null }];
   assert.deepEqual(attributePlan(schema, live, typesOf), { added: ["kind"], removed: ["markdown"], changed: [] });
   assert.deepEqual(attributePlan(schema, liveOf({ text: { coshareRequired: true } }), typesOf), { added: [], removed: [], changed: [{ name: "kind", what: ["coshareRequired"] }] });
 });
@@ -78,4 +78,18 @@ test("a reference sent to a draft points at the current schema of each target ty
   assert.equal(a.coshareRefSchemaId, "seat-now");
   assert.deepEqual(a.coshareRefSchemaIds, ["seat-now", "role-now"]);
   assert.deepEqual(withTargets(text, () => "x"), text);
+});
+
+const grouped = { ...schema, attributes: [ref], groups: [{ coshareName: "kinds", coshareDisplayName: "Kinds", coshareDescription: "The kinds", coshareOrder: 1, attributes: [text] }] };
+
+test("an attribute that moves into a group is a change", () => {
+  assert.deepEqual(attributePlan(grouped, liveOf(), typesOf), { added: [], removed: [], changed: [{ name: "kind", what: ["group"] }] });
+  assert.deepEqual(attributePlan(grouped, liveOf({ text: { group: "kinds" } }), typesOf), { added: [], removed: [], changed: [] });
+});
+
+test("the group plan names the groups to add, remove and change", () => {
+  assert.deepEqual(groupPlan(grouped, []), { added: ["kinds"], removed: [], changed: [] });
+  const live = [{ coshareName: "kinds", coshareDisplayName: "Kinds", coshareDescription: "The kinds", coshareOrder: 1 }, { coshareName: "old", coshareDisplayName: "Old", coshareOrder: 2 }];
+  assert.deepEqual(groupPlan(grouped, live), { added: [], removed: ["old"], changed: [] });
+  assert.deepEqual(groupPlan(grouped, [{ ...live[0], coshareOrder: 3, coshareDisplayName: "Kind" }]), { added: [], removed: [], changed: [{ name: "kinds", what: ["display name", "order"] }] });
 });

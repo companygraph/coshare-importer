@@ -2,6 +2,8 @@
 
 CoShare took all seven changes the [findings report of 2026-11-26](2026-11-26-findings-report.md) asked for, and most of its smaller findings, within two days. The importer has dropped every workaround they made necessary, and mental-model is back in the tenant at commit `07822bf`: 54 schemas at core version v0.71.0, 460 artifacts and 1,986 links, read back with no differences. The 31 table rows that had been merged into 17 links are separate links again, which is why there are 31 more links than on 2026-11-26.
 
+One thing CoShare has no place for at all: the guidance each of our schemas gives whoever writes a record, a person or an AI agent. The [last section](#guidance-for-whoever-writes-a-record) proposes a change for it, and it matters more to us than any finding here.
+
 ## What changed in the load
 
 The load is now two imports and the publishing between them. The schemas go in one bundle in any order, each under its vocabulary id, and every reference names all its targets by UUID and by type name. The artifacts go in bundles of 50 with their links and the links' properties; a link to an artifact not yet loaded waits for it, and 820 links did so and were made as their targets arrived. The 458 `PUT`s and 574 `PATCH`es after the imports, the second pass over the schemas and the re-pointing of artifacts at reassigned UUIDs are gone. The load took under two minutes.
@@ -27,11 +29,11 @@ Four behaviors came to light while the importer was reworked; each is recorded i
 | An `OVERWRITE` import of an artifact that other artifacts link to answers `SUCCESS` and writes nothing; an artifact nothing links to is overwritten | Overwrite it, or refuse it with a reason |
 | A link sent without `refOriginUUID` to an artifact not yet loaded is lost with `waiting: false`, and `POST /artifacts/resolve-references` does not bring it back | Let such a link wait by `refId`, or say in the answer that it is lost for good |
 | `GET /schemas` lists purged schemas beside the current schema of the same type | Leave purged schemas out unless asked for |
-| A purged schema keeps its UUID, and an import under it is refused as a conflict, so a test tenant cannot take an instance's schemas again after a reset | Free the UUID on purge, or offer a purge that does |
+| A schema walked to `purgable` is listed as `PURGED` although it is not purged: it keeps its UUID, and an import under it is refused as a conflict, until a `purge` after the retention period removes it. Our own cleanup took such schemas for purged | List it as `PURGABLE` until it is purged |
 
 A link's label also keeps the target's old name after the target is renamed, which matters only to a reader who sees the label without following the link.
 
-The last finding matters only to a clean reload. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for, and the importer now does that; the next section says how it went.
+The last finding matters only to a clean reload, and a purge after the retention period takes it away: what we had taken for purged schemas had only been made purgable. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for, and the importer now does that; the next section says how it went.
 
 `bin/sync.mjs` writes a changed page with a `PUT` that carries the page's values and its whole link set with every link's properties, because of the first finding; it was tried by syncing the tenant back to `c439b16` and forward to `07822bf` again, five pages each way, with `bin/verify.mjs` clean after each.
 
@@ -51,8 +53,40 @@ Five more behaviors came to light on the way, the first of them at a cost: archi
 | An import of a whole schema under the name of a type that exists makes a second type of the same name, beside the first | Refuse it, or make it a version of the type |
 | The integrity report checks deprecated and archived versions as well: 14 references from a type to itself stay pinned to the old version, and the typo heuristic fires once per version. After a purge and a new import of the same type name, it names two versions as the working version | Check the published version only, and move a type's references to itself with the rest |
 
+## Grouped attributes
+
+Groups work one level deep. A group keeps its display name, description and order, a grouped value imports, reads back over REST and GraphQL and is written by a `PUT` nested under its group, and a grouped reference links, with its properties and one link per row, through the bundle's `references` and through a nested `PUT`; on 2026-11-26 the import dropped the values, the names and the order, and a nested reference made no link. The importer now groups as the page is: the frontmatter at the top beside the name and tagline, one group per section in the page's order, holding the section's text and the links its table draws, and a last group, `companygraph`, for the id, the address, the digest, what no attribute holds and the commit. All 54 types took it as v0.71.2 through `bin/sync.mjs`, 209 groups in all, and `bin/verify.mjs` reads back every attribute in its group and every value through its group with no differences.
+
+Publishing a version leaves a type's references to itself on the previous version. CoShare's integrity check names each and its fix, and `bin/sync.mjs` now applies those fixes after it publishes: 42 on this change, none left. CoShare's data-quality page shows nothing else of ours; what it lists are `system_cosharePerson`'s three pending references, the typo heuristic, which now counts each of `STATUS` and `HOLDS` on three versions, and leftovers of the throwaway schemas these probes used: three types with two working versions after a purge and an import of the same name, and 32 of the 47 attributes it counted as unclassified. Purging each throwaway schema, which had only been made purgable, removed them, and the page then showed nine warnings and no error: the three pending references, the six typo warnings, and 15 unclassified attributes, all on CoShare's own `system_File` and `system_cosharePerson`.
+
+| What we saw | What we ask |
+| --- | --- |
+| A group within a group fails the schema import with "the schema was not created", yet a draft is left behind without a state machine, so that no transition removes it; only a `DELETE` of the schema, after its artifacts, does | Import nested groups, or refuse them leaving nothing behind |
+| A value sent at the top for a grouped attribute is dropped on import, which answers `SUCCESS`; a `PUT` refuses the same value and says to nest it | Refuse it on import as the `PUT` does |
+| A grouped reference named as `group.attribute` in `references` is refused as `RELATIONSHIP_TYPE_REQUIRED`, which does not name the cause | Take the group path, or name the cause |
+| `GET /schemas/{uuid}/attributes` lists only the ungrouped attributes | List every attribute, with the group it is in |
+| Throwaway schemas made purgable, which the page lists as purged, kept three types with two working versions and 32 unclassified attributes on the data-quality page, with no fix offered there; purging them removed them | Leave schemas made purgable out of the checks, or point to the purge |
+
+## A clean reload
+
+With purging understood, the tenant was emptied and loaded again from mental-model at `07822bf`: `bin/reset.mjs` deleted the 460 artifacts and purged all 162 versions of the 54 types, leaving no `cg_` schema listed, and `bin/load.mjs` imported the 54 schemas under their vocabulary ids at v0.71.0, groups included, and the 460 artifacts, whose 820 links to artifacts not yet loaded waited and were made. Each type now has one version, at the core version it describes. `bin/verify.mjs` reports no differences, a sync finds nothing to do, and CoShare's health counts no error and five warnings: the three pending references of its own `system_cosharePerson` and the typo heuristic on `STATUS` and `HOLDS`, once each.
+
+## Guidance for whoever writes a record
+
+Each of our schemas carries two sections of guidance besides the structure it declares: `## Purpose`, what the type is for and what question one of its records answers, and `## Writing rules`, how to write one well. [`concept-schema.md`](https://github.com/companygraph/mental-model/blob/main/meta/core/concept-schema.md) is an example. In CompanyGraph they are what an agent reads before it writes a page, and they are much of why its pages come out right. All 54 schemas have both; Purpose runs to about 2,000 characters, Writing rules to about 4,500.
+
+CoShare has no place for them. The schema description takes at most 4,000 characters, and the user interface shows it in one place only, under the schema's name in Data, Records, as one paragraph of small print with its line breaks lost; the Schema Manager and the graphical editor, where a schema is built, do not show it. We load Purpose there today, with the tagline and the commit it came from, and Writing rules not at all: putting them in the description would mix them with what describes the schema, cut the longest at 4,000 characters, and leave them where no one writing a record looks. CoShare's Foundation Semantic Schema Profile has the slots for them, `semantic` and `ai`, empty in every export, with `ai.enrichmentStatus` at `not_started`.
+
+| What we propose | Why |
+| --- | --- |
+| Two fields on a schema, purpose and writing rules, in Markdown and as long as TEXT allows | They are not a description of the schema but guidance for whoever writes against it, and they run longer than 4,000 characters |
+| Shown, rendered, where a record is written and read, and where a schema is edited | A person writing a record sees them when they need them |
+| Carried in the bundle export and import | A loader like ours sets them the way it sets everything else |
+| Placed in the Foundation Semantic Schema Profile's `semantic` and `ai` sections | An AI agent receives them with the schema it writes against, as guidance rather than as part of a description |
+
+One more finding, from the same look at the user interface: versions show with the `v` doubled, `vv0.71.0`, and CoShare's own `system_cosharePerson` shows as `vv1.3.2`, so the `v` is added to a version that carries one already.
+
 ## Open
 
-- [ ] Ask CoShare about the nine findings above.
-- [ ] Try grouped attributes again.
-- [ ] Load a second instance, to see what generalizes beyond mental-model.
+- [ ] Propose the schema guidance fields to CoShare, and ask about the fifteen findings above.
+- [ ] Load a second instance, to see what generalizes beyond mental-model; a tenant holds one instance, since the `cg_` prefix names the meta-model.

@@ -14,6 +14,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { client } from "../lib/coshare.mjs";
+import { flatAttributes } from "../lib/convert.mjs";
+import { addressOf } from "../lib/sync.mjs";
 
 const args = process.argv.slice(2);
 const dir = args[0];
@@ -66,8 +68,9 @@ for (const s of wanted) {
   if (x.coshareUUID !== s.coshareUUID) problems.push(`UUID ${x.coshareUUID}, sent ${s.coshareUUID}`);
   if (x.coshareVersion !== s.coshareVersion) problems.push(`version ${x.coshareVersion}, sent ${s.coshareVersion}`);
   if (x.coshareState !== "PUBLISHED") problems.push(x.coshareState);
-  const live = new Map(((await cs.call("GET", `/schemas/${x.coshareUUID}/attributes`)).json?.items ?? []).map((a) => [a.coshareName, a]));
-  for (const a of s.attributes.filter((a) => a.coshareType === "REFERENCE")) {
+  const live = new Map((await cs.attributes(x.coshareUUID)).map((a) => [a.coshareName, a]));
+  for (const a of flatAttributes(s)) if (!live.has(a.coshareName) || (live.get(a.coshareName).group ?? null) !== a.group) problems.push(`${a.coshareName} ${live.has(a.coshareName) ? `in group ${live.get(a.coshareName).group}, sent ${a.group}` : "missing"}`);
+  for (const a of flatAttributes(s).filter((a) => a.coshareType === "REFERENCE")) {
     const got = live.get(a.coshareName)?.coshareRefSchemaIds ?? [];
     if (got.length !== a.coshareRefSchemaIds.length || !a.coshareRefSchemaIds.every((id) => got.includes(id))) problems.push(`${a.coshareName} targets ${JSON.stringify(got)}`);
   }
@@ -90,10 +93,10 @@ for (let i = 0; i < artifactsToImport.length; i += 50) {
   for (const it of r.json?.items ?? []) {
     const a = chunk[it.index];
     if (it.status === "SUCCESS") { t.succeeded++; continue; }
-    if (it.status !== "PARTIAL") { fail(`artifact ${a?.attributes.address}`, it.error ?? JSON.stringify(it)); continue; }
+    if (it.status !== "PARTIAL") { fail(`artifact ${addressOf(a)}`, it.error ?? JSON.stringify(it)); continue; }
     t.partial++;
     // A link that waits for its target is expected here; one that does not wait is lost.
-    for (const f of it.failedReferences ?? []) if (f.waiting) t.waiting++; else { t.dropped++; fail(`link ${a.attributes.address}.${f.attribute} → ${f.refLabel}`, f.reason); }
+    for (const f of it.failedReferences ?? []) if (f.waiting) t.waiting++; else { t.dropped++; fail(`link ${addressOf(a)}.${f.attribute} → ${f.refLabel}`, f.reason); }
   }
 }
 step("artifacts imported", t);

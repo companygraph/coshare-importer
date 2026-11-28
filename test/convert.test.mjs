@@ -7,7 +7,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
-import { convert, report, typeName } from "../lib/convert.mjs";
+import { convert, report, typeName, flatAttributes } from "../lib/convert.mjs";
 
 let root;
 const id = (n) => `01a21686-0000-7000-8000-${String(n).padStart(12, "0")}`;
@@ -29,6 +29,7 @@ before(() => {
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const decisionOf = (r) => r.artifacts.find((a) => a.coshareType === "cg_decision");
+const cg = (a) => a.attributes.companygraph;
 const linksOf = (a, attribute) => a.references.filter((l) => l.attribute === attribute);
 
 test("every type the vocabulary declares becomes a schema at its unit's version", () => {
@@ -42,13 +43,13 @@ test("every type the vocabulary declares becomes a schema at its unit's version"
   for (const s of r.schemas) {
     assert.match(s.coshareType, /^cg_[a-z0-9_]+$/);
     assert.doesNotMatch(s.coshareType, /coshare/i);
-    const names = s.attributes.map((a) => a.coshareName);
+    const names = flatAttributes(s).map((a) => a.coshareName);
     assert.equal(new Set(names).size, names.length, `${s.coshareType} names an attribute twice`);
   }
-  const attrs = r.schemas.find((s) => s.coshareType === "cg_decision").attributes;
+  const attrs = flatAttributes(r.schemas.find((s) => s.coshareType === "cg_decision"));
   const type = (n) => attrs.find((a) => a.coshareName === n).coshareType;
   assert.deepEqual(["unmapped", "tagline", "why", "alternatives", "name", "address", "companygraph_digest"].map(type), ["TEXT", "TEXT", "TEXT", "TEXT", "STRING", "STRING", "STRING"]);
-  assert.ok(r.schemas.every((s) => !s.attributes.some((a) => a.coshareName === "markdown")), "a schema still carries the whole page");
+  assert.ok(r.schemas.every((s) => !flatAttributes(s).some((a) => a.coshareName === "markdown")), "a schema still carries the whole page");
 });
 
 test("an enum field carries its tokens as ALLOWED_VALUES", () => {
@@ -59,15 +60,15 @@ test("an enum field carries its tokens as ALLOWED_VALUES", () => {
 test("a page becomes an artifact with its id, its whole text and its links", () => {
   const d = decisionOf(convert(root));
   assert.equal(d.coshareUUID, id(5));
-  assert.equal(d.attributes.companygraph_id, id(5));
-  assert.equal(d.attributes.address, "decisions/2026-one-voice");
+  assert.equal(cg(d).companygraph_id, id(5));
+  assert.equal(cg(d).address, "decisions/2026-one-voice");
   const file = fs.readFileSync(path.join(root, "model", "decisions", "2026-one-voice.md"), "utf8");
-  assert.equal(d.attributes.companygraph_digest, crypto.createHash("sha256").update(file).digest("hex"));
-  assert.equal(d.attributes.unmapped, undefined, "a page the schema holds whole has nothing unmapped");
+  assert.equal(cg(d).companygraph_digest, crypto.createHash("sha256").update(file).digest("hex"));
+  assert.equal(cg(d).unmapped, undefined, "a page the schema holds whole has nothing unmapped");
   assert.equal(d.attributes.decided, "2026-11-01");
   assert.deepEqual(linksOf(d, "kind"), [{ attribute: "kind", relationshipType: "KIND", refId: id(3), refLabel: "Vocabulary", refSchemaType: "cg_decision_kind", refOriginUUID: id(3) }]);
-  assert.ok(Object.values(d.attributes).every((v) => !v || typeof v !== "object" || Array.isArray(v)), "a link was left among the attributes");
-  assert.match(d.attributes.alternatives, /\| Many voices \| A reader cannot tell who speaks \|/);
+  assert.ok(Object.values(d.attributes).flatMap((v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.values(v) : [v])).every((v) => !v || typeof v !== "object"), "a link was left among the attributes");
+  assert.match(d.attributes.alternatives.alternatives, /\| Many voices \| A reader cannot tell who speaks \|/);
 });
 
 test("a table link carries its row and the row's other cells", () => {
@@ -79,14 +80,14 @@ test("two rows naming one entity are two links, each with its own row", () => {
   const r = convert(root);
   const owner = linksOf(decisionOf(r), "bears_on").filter((l) => l.refLabel === "Owner");
   assert.deepEqual(owner.map((l) => l.properties), [{ row: "1", type: "seat", owner: "", how: "made it" }, { row: "3", type: "seat", owner: "", how: "ended it" }]);
-  const bears = r.schemas.find((s) => s.coshareType === "cg_decision").attributes.find((a) => a.coshareName === "bears_on");
+  const bears = flatAttributes(r.schemas.find((s) => s.coshareType === "cg_decision")).find((a) => a.coshareName === "bears_on");
   assert.equal(bears.coshareRefRepeatable, true);
   assert.equal(r.counts.links, decisionOf(r).references.length + r.artifacts.filter((a) => a !== decisionOf(r)).reduce((n, a) => n + a.references.length, 0));
 });
 
 test("a reference to any type names every type the model reaches, by UUID and by name", () => {
   const r = convert(root);
-  const bears = r.schemas.find((s) => s.coshareType === "cg_decision").attributes.find((a) => a.coshareName === "bears_on");
+  const bears = flatAttributes(r.schemas.find((s) => s.coshareType === "cg_decision")).find((a) => a.coshareName === "bears_on");
   const uuidOf = (t) => r.schemas.find((s) => s.coshareType === t).coshareUUID;
   assert.equal(bears.coshareRefSchemaType, "cg_seat"); // the most used first
   assert.deepEqual(bears.coshareRefSchemaTypes, ["cg_seat", "cg_decision_kind"]);
@@ -114,18 +115,19 @@ test("only the named types are converted, and the report counts what was", () =>
 
 test("a person's attributes are personal, a reference to a person identifies one indirectly, the rest is not personal", () => {
   const r = convert(root);
-  const attrs = (type) => r.schemas.find((s) => s.coshareType === type).attributes;
+  const attrs = (type) => flatAttributes(r.schemas.find((s) => s.coshareType === type));
   assert.ok(attrs("cg_profile").every((a) => a.cosharePrivacy === 2), "a profile attribute is not personal");
   assert.ok(attrs("cg_experience").every((a) => a.cosharePrivacy === 2), "an experience, owned by a profile, is not personal");
   assert.equal(attrs("cg_group").find((a) => a.coshareName === "people").cosharePrivacy, 1);
   assert.ok(attrs("cg_decision").every((a) => a.cosharePrivacy === 0));
-  assert.ok(r.schemas.every((s) => s.attributes.every((a) => !("coshareConfidentiality" in a))), "confidentiality was set without being asked");
+  assert.ok(r.schemas.every((s) => flatAttributes(s).every((a) => !("coshareConfidentiality" in a))), "confidentiality was set without being asked");
 });
 
 test("confidentiality is one level for every attribute, and only 0 to 3", () => {
   const r = convert(root, { confidentiality: 0 });
-  assert.ok(r.schemas.every((s) => s.attributes.every((a) => a.coshareConfidentiality === 0)));
-  assert.ok(r.schemas.every((s) => s.attributes.every((a) => !("targetTypes" in a) && !("section" in a))), "a working field leaked into a bundle");
+  assert.ok(r.schemas.every((s) => flatAttributes(s).every((a) => a.coshareConfidentiality === 0)));
+  const raw = (s) => [...s.attributes, ...s.groups.flatMap((g) => g.attributes)];
+  assert.ok(r.schemas.every((s) => raw(s).every((a) => !("targetTypes" in a) && !("section" in a) && !("group" in a))), "a working field leaked into a bundle");
   assert.throws(() => convert(root, { confidentiality: 4 }), /0, 1, 2 or 3/);
 });
 
@@ -135,8 +137,8 @@ test("--commit reads the instance as it was committed, not its working copy", ()
   fs.writeFileSync(file, committed.replace("One reader.", "One reader, edited."));
   try {
     const now = decisionOf(convert(root)), then = convert(root, { commit: "HEAD" });
-    assert.match(now.attributes.why, /One reader, edited\./);
-    assert.equal(decisionOf(then).attributes.why, "One reader.");
+    assert.match(now.attributes.why.why, /One reader, edited\./);
+    assert.equal(decisionOf(then).attributes.why.why, "One reader.");
     assert.equal(then.commit, execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim());
     assert.throws(() => convert(root, { commit: "no-such-ref" }), /has no commit no-such-ref/);
   } finally {
@@ -146,8 +148,26 @@ test("--commit reads the instance as it was committed, not its working copy", ()
 
 test("what no attribute holds is kept in unmapped and named as a loose end", () => {
   const r = convert(root);
-  const owner = r.artifacts.find((a) => a.attributes.address === "seats/owner");
-  assert.equal(owner.attributes.unmapped, "## Notes\n\nA section no schema declares.\n\n- `mood`: calm");
+  const owner = r.artifacts.find((a) => cg(a).address === "seats/owner");
+  assert.equal(cg(owner).unmapped, "## Notes\n\nA section no schema declares.\n\n- `mood`: calm");
   assert.ok(r.losses.some((l) => /seats\/owner: section "## Notes" is not in the seat schema; kept in `unmapped`/.test(l)));
   assert.ok(r.losses.some((l) => /seats\/owner: `mood` is not a field of the seat schema; kept in `unmapped`/.test(l)));
+});
+
+test("each section is a group in the page's order, its links beside its text, and the bookkeeping last", () => {
+  const r = convert(root);
+  const decision = r.schemas.find((s) => s.coshareType === "cg_decision");
+  assert.deepEqual(decision.attributes.map((a) => a.coshareName).slice(0, 2), ["name", "tagline"]);
+  assert.ok(["decided", "kind", "status", "by"].every((n) => decision.attributes.some((a) => a.coshareName === n)), "a frontmatter field is not at the top");
+  const groups = decision.groups.map((g) => [g.coshareName, g.coshareDisplayName, g.coshareOrder, g.attributes.map((a) => a.coshareName)]);
+  assert.deepEqual(groups.find((g) => g[0] === "bears_on"), ["bears_on", "Bears on", groups.find((g) => g[0] === "bears_on")[2], ["bears_on_text", "bears_on"]]);
+  assert.deepEqual(groups.at(-1), ["companygraph", "CompanyGraph", groups.length, ["companygraph_id", "address", "companygraph_digest", "unmapped", "companygraph_commit"]]);
+  assert.deepEqual(groups.map((g) => g[2]), groups.map((_, i) => i + 1));
+  assert.ok(groups.findIndex((g) => g[0] === "the_question") < groups.findIndex((g) => g[0] === "why"), "the groups are not in the page's order");
+  assert.ok(decision.groups.every((g) => g.coshareDepth === 0 && g.subgroups.length === 0), "a group has a subgroup, which CoShare's import refuses");
+  const d = decisionOf(r);
+  assert.equal(d.attributes.why.why, "One reader.");
+  assert.equal(d.attributes.bears_on.bears_on_text.split("\n")[0], "| Type | Entity | Owner | How |");
+  assert.equal(d.attributes.decided, "2026-11-01");
+  assert.ok(linksOf(d, "bears_on").length === 4, "a grouped reference lost its links");
 });
