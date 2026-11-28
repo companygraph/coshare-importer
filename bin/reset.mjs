@@ -4,10 +4,10 @@
 // Removes everything the importer put into a tenant: every artifact and schema whose type starts
 // with cg_. Nothing else is touched. Artifacts and drafts are deleted outright. A published schema
 // can only be walked out: deprecate, decommission, archive, purgable and, after CoShare's retention
-// period, purge. A purged schema stays listed, and keeps its UUID, until it is purged a second
-// time, which removes it, so the same schemas can be loaded again. Purges run in passes until no
-// cg_ schema is listed or a pass makes no progress, since a purge refused while the retention
-// period runs succeeds on a later pass.
+// period, purge. A schema made purgable is listed as PURGED but holds its UUID until the purge,
+// which removes it, so the same schemas can be loaded again. Purges run in passes until no cg_
+// schema is listed or a pass makes no progress, since a purge refused while the retention period
+// runs succeeds on a later pass.
 import { client } from "../lib/coshare.mjs";
 
 const cs = client({ dry: process.argv.includes("--dry-run") });
@@ -18,7 +18,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const lists = (await cs.graphql("{ coshareSchemas(first: 500) { items { type listField } } }"))?.data?.coshareSchemas?.items ?? [];
 const schemas = await ours();
 let deleted = 0, failed = 0;
+// A type's artifacts are listed once, whatever number of versions it has.
+const seen = new Set();
 for (const s of schemas) {
+  if (seen.has(s.coshareType)) continue;
+  seen.add(s.coshareType);
   const field = lists.find((x) => x.type === s.coshareType)?.listField;
   if (!field) continue;
   const ids = ((await cs.graphql(`{ ${field}(first: 5000) { coshareUUID } }`))?.data?.[field] ?? []).map((a) => a.coshareUUID);
