@@ -8,7 +8,7 @@ GraphQL cannot register a schema. It is generated from the published schemas, wi
 
 Under `uuidHandling=PRESERVE_INTERNAL` a schema and an artifact each keep the UUID they are sent with. A schema's type UUID is assigned by CoShare, which keeps the one sent as `coshareOriginTypeUUID`. `conflictStrategy` takes `FAIL`, `SKIP` or `OVERWRITE`. An `OVERWRITE` of an artifact replaces its values and its whole link set and keeps the links other artifacts have to it, but only for an artifact nothing links to: for one that other artifacts link to, it answers `SUCCESS` and writes nothing. `bin/sync.mjs` therefore writes a changed page with a `PUT`.
 
-A purged schema stays in the tenant's list of schemas as `PURGED`, beside any later schema of its type, and the importer leaves it out of every list it reads. It keeps its UUID, and an import under that UUID is refused as a conflict, whatever type name it carries. A tenant that has held an instance's schemas therefore cannot take them again under the same UUIDs after `bin/reset.mjs`.
+A purged schema stays in the tenant's list of schemas as `PURGED`, beside any later schema of its type, and the importer leaves it out of every list it reads. It keeps its UUID, and an import under that UUID is refused as a conflict, whatever type name it carries. A tenant that has held an instance's schemas therefore cannot take them again under the same UUIDs after `bin/reset.mjs`. A schema imported under a new UUID with the type name of a purged schema joins the purged schema's type and takes the next patch version, whatever version it is sent with; afterwards CoShare's integrity report can name two versions of that type as its working version.
 
 An attribute takes STRING, TEXT, INTEGER, FLOAT, BOOLEAN, DATE, URL, MAIL, UUID, REFERENCE, FILE or an array of one of them, such as STRING_ARRAY. TEXT holds Markdown, up to 30,000 characters unless a LENGTH rule sets another limit, and the record view renders it; the importer writes prose, whole pages and taglines as TEXT and lists any value over the limit as a loose end. A schema keeps the `coshareVersion` it is imported with. Editing a draft's attribute raises its patch version unless the edit carries `?keepVersion=true`.
 
@@ -30,10 +30,18 @@ A reference with `coshareRefRepeatable: true` holds several links to one target,
 
 A link's `refLabel` is the target's name when the link was made, and stays so when the target is renamed.
 
+## Versions
+
+A published schema does not change; a changed schema is a new version of its type. `POST /schemas/versions` with `basedOn`, the UUID of the published version, and `versionBumpType`, `MAJOR`, `MINOR` or `PATCH`, creates a draft of the same type, with a new UUID and the version bumped; a draft's version cannot be set otherwise, and a `PUT` that sends another is refused as `SCHEMA_VERSION_IMMUTABLE`. Its attributes are added, changed and removed with `?keepVersion=true`, which keeps the version the draft was created with. Publishing it deprecates the previous version, and the references other schemas have to the type move to the new version. An import of the whole schema under the type's name does not make a version: it makes a second type of the same name.
+
+An artifact stays on the version it was written under until it is migrated, and keeps its links when it is. `POST /artifacts/{id}/migrate?toSchemaUUID=` migrates one artifact, dropping the values of attributes the new version does not have. `POST /schemas/{from}/artifacts/migrate?toUUID=` migrates all of a version's artifacts but refuses to drop an attribute's values without a mapping that says so, and did not take the mapping that `PUT /schemas/{to}/migration-mappings?fromVersionUUID=` stored, `{"<attribute>": {"sourceAttribute": "<attribute>", "action": "IGNORE"}}`, although CoShare's own validation of it passed. `bin/sync.mjs` therefore migrates artifact by artifact.
+
+A deprecated version stays as it is. `decommission` and `archive` of one whose artifacts were all migrated delete those artifacts: they answer 404 and CoShare counts none on any version of the type, and an archived version can go on only to purge. `POST /schemas/{uuid}/retire`, described as archiving a deprecated schema with no artifacts, refuses one, since the state machine does not allow DEPRECATED to ARCHIVED.
+
 ## Removing
 
 An artifact and a draft schema are deleted outright. A published schema is walked out: `deprecate`, `decommission`, `archive`, `purgable` and then `purge`, which CoShare refuses for about a minute after `purgable`. A schema another still references purges like any other.
 
 ## The integrity report
 
-`GET /schemas/integrity` flags references still pending and relationship types it takes for typos, such as `STATUS` beside `SEATS` and `HOLDS` beside `UPHOLDS`; the typo warnings cannot be dismissed yet. CoShare's own `system_cosharePerson` ships with three references pending, so a tenant reports warnings before anything is loaded; CoShare means to fix that with an updated schema.
+`GET /schemas/integrity` checks every version of a type, deprecated and archived ones too. It flags a reference from a type to itself on an old version as pinned to that version, since such references stay where they were when a new version is published while the others move. It flags references still pending and relationship types it takes for typos, once per version, such as `STATUS` beside `SEATS` and `HOLDS` beside `UPHOLDS`; the typo warnings cannot be dismissed yet. CoShare's own `system_cosharePerson` ships with three references pending, so a tenant reports warnings before anything is loaded; CoShare means to fix that with an updated schema.

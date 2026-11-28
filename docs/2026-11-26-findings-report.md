@@ -78,7 +78,7 @@ The load found no errors in mental-model; it found four places where CompanyGrap
 
 ## Open questions and next steps
 
-- [ ] Decide how a later commit reaches CoShare: a clean reload with `bin/reset.mjs`, or a new schema version per changed type and a migration of its artifacts, which is untested.
-- [ ] Send the requested changes to CoShare's maintainers, and agree which of them they take.
-- [ ] Confirm the names: types as `cg_<type>`, categories as `companygraph-<unit>`.
-- [ ] Load a second instance, to see what generalizes beyond mental-model.
+- [x] Decide how a later commit reaches CoShare: a clean reload with `bin/reset.mjs`, or a new schema version per changed type and a migration of its artifacts, which is untested. Decided for new versions: `bin/sync.mjs` writes a changed page again, and makes a changed schema a new version of its type with its artifacts migrated, first used on 2026-11-28; a clean reload is refused for schemas a tenant has held. See the [findings of 2026-11-28](2026-11-28-findings-report.md).
+- [x] Send the requested changes to CoShare's maintainers, and agree which of them they take. CoShare took all seven, and the smaller findings but the similarity warnings and `system_cosharePerson`, by 2026-11-28.
+- [x] Confirm the names: types as `cg_<type>`, categories as `companygraph-<unit>`. Confirmed by the owner on 2026-11-28: the prefix names the meta-model, so one tenant holds one instance.
+- [ ] Load a second instance, to see what generalizes beyond mental-model. Carried into the [findings of 2026-11-28](2026-11-28-findings-report.md).

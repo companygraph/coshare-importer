@@ -31,14 +31,28 @@ Four behaviors came to light while the importer was reworked; each is recorded i
 
 A link's label also keeps the target's old name after the target is renamed, which matters only to a reader who sees the label without following the link.
 
-The last finding matters only to a clean reload. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for: a draft created from the published version with a patch, minor or major bump, edited with `keepVersion`, published over the previous version, and the artifacts migrated to it. The importer does not do that yet; `bin/sync.mjs` stops on a changed schema.
+The last finding matters only to a clean reload. A tenant in use takes a changed schema as a new version of its type, the way CoShare is built for, and the importer now does that; the next section says how it went.
 
 `bin/sync.mjs` writes a changed page with a `PUT` that carries the page's values and its whole link set with every link's properties, because of the first finding; it was tried by syncing the tenant back to `c439b16` and forward to `07822bf` again, five pages each way, with `bin/verify.mjs` clean after each.
 
+## A changed schema as a new version
+
+With every CoShare limitation behind `markdown` gone, the whole page no longer needs to sit on each artifact. It gave way to `unmapped`, which holds only what no attribute of the schema holds, the two profiles' `## Voice` sections and one use case's `primary-actor: Agent`, and to `companygraph_digest`, the SHA-256 of the page, by which a sync tells a changed page from one the tenant holds. The page can no longer be rebuilt from CoShare character for character; every value it has is in an attribute, and `bin/verify.mjs` now compares every one of them, 5,938 on mental-model, where it compared the page.
+
+That change to all 54 schemas was the first to reach the tenant as new versions. `bin/sync.mjs` created a draft of each type from its published version with a patch bump, since only the mapping had changed, removed `markdown` and added the two attributes with `keepVersion`, and published it, which deprecated v0.71.0; then it migrated each type's artifacts one by one and wrote every page again. All 54 types are at v0.71.1, with 460 artifacts and 1,986 links read back with no differences, and a second sync finds nothing to do. A draft's version cannot be set, only bumped, so a CoShare version follows the core version by its bump and a change of the importer's mapping alone adds a patch; each schema's description names the core version it was loaded from.
+
+Five more behaviors came to light on the way, the first of them at a cost: archiving the deprecated versions deleted the 460 artifacts that had been migrated from them, and the sync imported them again from the instance.
+
+| What we saw | What we ask |
+| --- | --- |
+| `decommission` and `archive` of a deprecated version whose artifacts were all migrated to the published version delete those artifacts: they answer 404 and CoShare counts none on either version, and an archived version can only go on to purge | Leave migrated artifacts alone, or refuse to archive a version while its type has artifacts |
+| `POST /schemas/{uuid}/retire`, described as archiving a deprecated schema, refuses one: the state machine does not allow DEPRECATED to ARCHIVED | Let `retire` walk the states it needs, or describe what it takes |
+| The bulk migration refuses to drop an attribute without a mapping, and does not take one stored with `PUT /schemas/{to}/migration-mappings?fromVersionUUID=` although CoShare's validation of it passes; the migration of one artifact drops it without one | One rule for both, and the bulk migration reading the mapping stored for it |
+| An import of a whole schema under the name of a type that exists makes a second type of the same name, beside the first | Refuse it, or make it a version of the type |
+| The integrity report checks deprecated and archived versions as well: 14 references from a type to itself stay pinned to the old version, and the typo heuristic fires once per version. After a purge and a new import of the same type name, it names two versions as the working version | Check the published version only, and move a type's references to itself with the rest |
+
 ## Open
 
-- [ ] Ask CoShare about the four findings above.
-- [ ] Bring a changed schema to a tenant as a new version of its type, with its artifacts migrated, instead of stopping the sync.
-- [ ] Decide whether `markdown` stays now that no CoShare limitation requires it.
+- [ ] Ask CoShare about the nine findings above.
 - [ ] Try grouped attributes again.
 - [ ] Load a second instance, to see what generalizes beyond mental-model.
